@@ -1,0 +1,30 @@
+{
+  "hotkeys": {
+    "answer": "CommandOrControl+Shift+Space",
+    "code": "CommandOrControl+Shift+Return",
+    "toggleWindow": "CommandOrControl+Shift+H",
+    "language": "CommandOrControl+Shift+L",
+    "opacityUp": "CommandOrControl+Shift+Up",
+    "opacityDown": "CommandOrControl+Shift+Down"
+  },
+  "answer": { "model": "sonnet", "fastMode": false, "effort": "low" },
+  "code": { "model": "sonnet", "fastMode": false, "effort": "low" },
+  "setup": { "model": "sonnet", "fastMode": false, "effort": "medium" },
+  "stt": {
+    "model": "nova-3",
+    "language": "multi",
+    "endpointingMs": 300,
+    "utteranceEndMs": 1000,
+    "smartFormat": true
+  },
+  "window": {
+    "alwaysOnTop": true,
+    "hideFromScreenCapture": true,
+    "width": 1120,
+    "height": 720,
+    "opacity": 1
+  },
+  "screenshot": { "maxWidth": 1568 },
+  "audio": { "forceBuiltInMicWhenBluetooth": true },
+  "autoStart": false
+}

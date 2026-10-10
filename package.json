@@ -1,0 +1,23 @@
+{
+  "name": "entrevista",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Copiloto de entrevista ao vivo: captura áudio do sistema + microfone, transcreve em tempo real e sugere respostas via claude -p",
+  "main": "dist/main.js",
+  "scripts": {
+    "postinstall": "node scripts/patch-electron-plist.js && node scripts/build-helper.js",
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && electron .",
+    "audio-check": "npm run build && node scripts/audio-check.cjs",
+    "watch": "tsc -p tsconfig.json -w"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.0",
+    "electron": "^44.5.1",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  }
+}

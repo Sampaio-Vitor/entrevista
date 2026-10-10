@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'" />
+  <title>Entrevista</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <!-- ===== SETUP ===== -->
+  <section id="view-setup" class="view">
+    <header class="setup-head drag">
+      <div class="brand">
+        <h1>Entrevista</h1>
+        <p>Copiloto ao vivo. Transcreve os dois lados e responde quando você pedir.</p>
+      </div>
+    </header>
+
+    <div class="setup-grid">
+      <div class="setup-main">
+        <label for="briefing" class="field-label">Contexto inicial</label>
+        <p class="hint">Cole seu currículo, a vaga, a empresa e as histórias que quer usar. Português ou inglês. O Claude recebe isso como briefing durante a entrevista.</p>
+        <textarea id="briefing" spellcheck="false" placeholder="Ex.: Senior backend engineer, 7 anos, Go e Python. Vaga: Staff Engineer na Acme (série B, pagamentos). Histórias: migração que cortou latência de 900 ms para 310 ms; incidente de produção com rollback em 6 min; liderei squad de 5…"></textarea>
+
+        <div class="row">
+          <button id="btn-refine" class="btn secondary" type="button">Refinar com Claude</button>
+          <button id="btn-start" class="btn primary" type="button">Começar sessão</button>
+          <span id="start-note" class="muted"></span>
+        </div>
+
+        <div id="setup-chat" class="chat hidden">
+          <div class="chat-head">
+            <span>Diálogo de preparação <span class="muted" id="setup-model"></span></span>
+            <button id="chat-reset" class="link" type="button">reiniciar</button>
+          </div>
+          <div id="chat-log" class="chat-log"></div>
+          <div class="row">
+            <input id="chat-input" type="text" placeholder="Responda ao Claude e pressione Enter…" autocomplete="off" />
+            <button id="chat-send" class="btn secondary" type="button">Enviar</button>
+          </div>
+          <p class="hint">Quando o briefing final aparecer, ele é copiado para a caixa acima. Edite à vontade e comece.</p>
+        </div>
+      </div>
+
+      <aside class="setup-side">
+        <h3>Checklist</h3>
+        <ul id="checklist" class="checklist"></ul>
+
+        <h3>Atalhos</h3>
+        <ul id="hotkeys" class="hotkeys"></ul>
+
+        <h3>Modelos</h3>
+        <ul id="models" class="models"></ul>
+
+        <h3>Sessões anteriores</h3>
+        <ul id="sessions" class="sessions"></ul>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===== LIVE ===== -->
+  <section id="view-live" class="view hidden">
+    <header class="bar drag">
+      <div class="bar-left">
+        <span class="live-only rec" title="Gravando">●</span>
+        <span id="timer" class="live-only timer">00:00</span>
+        <span class="live-only sep"></span>
+        <span class="live-only dot idle" id="dot-me"></span><span class="live-only lbl">Mic</span>
+        <span class="live-only meter"><span id="lvl-me" class="meter-fill me"></span></span>
+        <span class="live-only dot idle" id="dot-them"></span><span class="live-only lbl">Sistema</span>
+        <span class="live-only meter"><span id="lvl-them" class="meter-fill them"></span></span>
+        <span class="live-only dot idle" id="dot-stt"></span><span class="live-only lbl">STT</span>
+        <span id="view-title" class="view-only view-title"></span>
+      </div>
+      <div class="bar-right no-drag">
+        <label class="opacity" title="Opacidade do fundo (⌘⇧↑ / ⌘⇧↓)">
+          <span class="opacity-icon">◐</span>
+          <input id="opacity" type="range" min="30" max="100" step="5" value="100" />
+        </label>
+        <span id="model-badge" class="live-only badge"></span>
+        <button id="btn-lang" class="live-only btn ghost small lang-flag" type="button">🇺🇸</button>
+        <button id="btn-answer" class="live-only btn primary small" type="button">Resposta <kbd id="kbd-answer"></kbd></button>
+        <button id="btn-code" class="live-only btn secondary small" type="button">Código <kbd id="kbd-code"></kbd></button>
+        <button id="btn-clear" class="live-only btn ghost small" type="button" title="Limpar transcrição">Limpar</button>
+        <button id="btn-hide" class="live-only btn ghost small" type="button" title="Ocultar janela">Ocultar <kbd id="kbd-hide"></kbd></button>
+        <button id="btn-stop" class="live-only btn ghost small" type="button">Parar</button>
+        <button id="btn-reveal" class="view-only btn ghost small" type="button" title="Mostrar o arquivo .md no Finder">Arquivo .md</button>
+        <button id="btn-delete" class="view-only btn ghost small" type="button">Apagar</button>
+        <button id="btn-back" class="view-only btn secondary small" type="button">Voltar</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner hidden"></div>
+
+    <main class="panes">
+      <section class="pane transcript-pane">
+        <h2>Transcrição</h2>
+        <div id="transcript" class="transcript"></div>
+      </section>
+      <section class="pane answer-pane">
+        <div id="answer-empty" class="answer-empty">
+          <p>Pressione <kbd class="kbd-inline" id="kbd-answer-2"></kbd> para a resposta ou <kbd class="kbd-inline" id="kbd-code-2"></kbd> para resolver o que está na tela.</p>
+        </div>
+        <div id="answer-current"></div>
+        <div id="answer-history"></div>
+      </section>
+    </main>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
