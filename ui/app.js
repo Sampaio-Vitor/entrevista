@@ -158,8 +158,8 @@
     showView();
     renderTranscript();
     renderAnswers();
-    $('#answer-pane').scrollTop = 0;
-    $('#transcript').scrollTop = 0;
+    $('.answer-pane').scrollTop = 0;
+    $('.transcript-pane').scrollTop = 0;
   }
 
   function leaveViewer() {
@@ -287,9 +287,10 @@
 
   function renderTranscript() {
     const el = $('#transcript');
+    const pane = el.closest('.pane'); // the pane is the scroll container, not #transcript
     const viewing = state.viewing && state.phase !== 'live';
     const segments = viewing ? state.viewing.segments : state.segments;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 80;
     if (!segments.length) {
       el.innerHTML = `<p class="transcript-empty">${viewing ? 'Sem fala registrada.' : 'Aguardando fala…'}</p>`;
       return;
@@ -298,7 +299,7 @@
       const who = s.speaker === 'me' ? 'Me' : 'Interviewer';
       return `<div class="seg ${s.speaker} ${s.final ? '' : 'open'}"><span class="who">${who}</span><span class="txt">${s.final ? esc(s.text) : `<span class="interim">${esc(s.text)}</span>`}</span></div>`;
     }).join('');
-    if (nearBottom && !viewing) el.scrollTop = el.scrollHeight;
+    if (nearBottom && !viewing) pane.scrollTop = pane.scrollHeight;
   }
 
   function answerHtml(a) {
@@ -409,7 +410,7 @@
     a.meta = d.meta || {};
     a.at = (d.meta && d.meta.at) || a.at;
     renderAnswers();
-    $('#answer-pane') && ($('#answer-pane').scrollTop = 0);
+    $('.answer-pane') && ($('.answer-pane').scrollTop = 0);
   });
 
   api.on('answer:delta', (d) => {
