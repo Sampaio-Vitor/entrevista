@@ -28,6 +28,14 @@
       <div class="setup-main">
         <!-- meeting -->
         <div id="panel-meeting" class="panel">
+          <div id="upcoming-block" class="hidden">
+            <div class="recent-head upcoming-head">
+              <h3>Próximas reuniões</h3>
+              <button id="cal-refresh" class="link" type="button">atualizar</button>
+            </div>
+            <ul id="upcoming" class="meetings upcoming"></ul>
+          </div>
+
           <label for="context" class="field-label">Contexto da reunião <span class="muted">(opcional)</span></label>
           <p class="hint">Uma linha basta: com quem, sobre o quê, o que você quer tirar dela. Vai para o resumo e para o chat.</p>
           <textarea id="context" class="context" spellcheck="false" placeholder="Ex.: 1:1 com a Ana sobre o roadmap do Q1. Quero sair com as prioridades fechadas."></textarea>

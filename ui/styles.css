@@ -396,6 +396,15 @@ textarea.context:focus { border-color: var(--ink); }
   background: var(--bg-soft);
 }
 .meeting-card:hover { border-color: var(--line-strong); }
+.upcoming-head { margin-top: 0; }
+.upcoming { margin-bottom: 18px; overflow: visible; }
+.upcoming .meeting-card { cursor: default; display: flex; align-items: center; gap: 12px; border-left: 4px solid var(--cal, var(--line-strong)); }
+.upcoming .meeting-card.now { border-color: var(--ink); border-left-color: var(--cal, var(--ink)); }
+.upcoming .uc-body { flex: 1; min-width: 0; }
+.upcoming .mc-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.upcoming .uc-actions { display: flex; gap: 6px; flex: none; }
+.upcoming .s-empty { list-style: none; color: var(--muted); font-size: 13.5px; padding: 4px 0; }
+.upcoming .s-empty .link { margin-left: 6px; }
 .mc-top { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--muted); }
 .mc-chips { display: inline-flex; gap: 4px; }
 .chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--ink-soft); }

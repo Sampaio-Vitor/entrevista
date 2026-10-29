@@ -24,6 +24,7 @@ const INVOKE_CHANNELS = new Set([
   'meeting:refine',
   'permissions:request',
   'open:external',
+  'calendar:upcoming',
 ]);
 
 const EVENT_CHANNELS = new Set([

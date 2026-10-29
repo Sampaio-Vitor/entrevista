@@ -32,6 +32,7 @@
     lib: { tab: 'meetings', q: '', person: '', results: [], person: '', detail: null },
     editingSpeaker: null,
     summaryStreaming: null, // { sessionId, text }
+    calendar: { access: null, events: [], fetchedAt: 0, loading: false }, // upcoming meetings
   };
 
   // ---------- utilities ----------
@@ -261,6 +262,89 @@
     $('#meeting-note').textContent = note.length ? `Vai iniciar ${note.join(' e ')}.` : '';
   }
 
+  // ---------- setup: upcoming meetings (macOS calendar) ----------
+
+  function fmtEventWhen(e) {
+    const hm = (ts) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const day = new Date(e.start); day.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const diff = Math.round((day - today) / 86400000);
+    const label = diff <= 0 ? 'Hoje' : diff === 1 ? 'Amanhã' : new Date(e.start).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' });
+    return `${label} · ${hm(e.start)}–${hm(e.end)}`;
+  }
+
+  function eventChip(e) {
+    const now = Date.now();
+    if (e.start <= now) return '<span class="chip busy">agora</span>';
+    const min = Math.round((e.start - now) / 60000);
+    return min <= 60 ? `<span class="chip">em ${min} min</span>` : '';
+  }
+
+  function renderUpcoming() {
+    const cal = state.calendar;
+    const block = $('#upcoming-block');
+    block.classList.toggle('hidden', !cal.access || cal.access === 'unavailable');
+    const el = $('#upcoming');
+    if (cal.access === 'notDetermined' || cal.access === 'unknown') {
+      el.innerHTML = '<li class="s-empty">Veja suas reuniões de todas as contas do Calendário do Mac.<button class="link" id="cal-connect" type="button">conectar calendário</button></li>';
+      $('#cal-connect').addEventListener('click', () => refreshCalendar(true));
+      return;
+    }
+    if (cal.access && cal.access !== 'granted') {
+      el.innerHTML = '<li class="s-empty">Sem acesso ao calendário. Ative "Entrevista" em Ajustes > Privacidade > Calendários.<button class="link" id="cal-settings" type="button">abrir ajustes</button></li>';
+      $('#cal-settings').addEventListener('click', () => api.invoke('permissions:request', { which: 'calendars' }));
+      return;
+    }
+    const list = cal.events.slice(0, 4);
+    if (!list.length) {
+      el.innerHTML = `<li class="s-empty">${cal.loading ? 'Lendo o calendário…' : 'Nenhuma reunião nas próximas 36 horas.'}</li>`;
+      return;
+    }
+    el.innerHTML = list.map((e) => {
+      const color = /^#[0-9a-f]{6}$/i.test(e.color || '') ? ` style="--cal:${e.color}"` : '';
+      const guests = e.guests || [];
+      const people = guests.slice(0, 4).map((g) => `<span class="pp">${esc(g)}</span>`).join('')
+        + (guests.length > 4 ? `<span class="pp">+${guests.length - 4}</span>` : '');
+      const join = e.link ? `<button class="btn primary small" data-join="${esc(e.id)}" type="button" title="${esc(e.link)}">Entrar e gravar</button>` : '';
+      return `<li class="meeting-card ${e.start <= Date.now() ? 'now' : ''}"${color}>
+        <div class="uc-body">
+          <div class="mc-top"><span class="mc-when">${esc(fmtEventWhen(e))} · ${esc(e.source)}</span><span class="mc-chips">${eventChip(e)}</span></div>
+          <div class="mc-title" title="${esc(e.title)}">${esc(e.title || '(sem título)')}</div>
+          ${people ? `<div class="mc-people">${people}</div>` : ''}
+        </div>
+        <div class="uc-actions">${join}<button class="btn ${e.link ? 'secondary' : 'primary'} small" data-rec="${esc(e.id)}" type="button">Só gravar</button></div>
+      </li>`;
+    }).join('');
+    el.querySelectorAll('[data-join]').forEach((b) => b.addEventListener('click', () => startFromEvent(b.dataset.join, true)));
+    el.querySelectorAll('[data-rec]').forEach((b) => b.addEventListener('click', () => startFromEvent(b.dataset.rec, false)));
+  }
+
+  async function refreshCalendar(request) {
+    const cal = state.calendar;
+    if (cal.loading) return;
+    cal.loading = true;
+    renderUpcoming();
+    try {
+      const r = await api.invoke('calendar:upcoming', { request: Boolean(request) });
+      if (r) { cal.access = r.access; cal.events = r.events || []; cal.fetchedAt = r.fetchedAt || Date.now(); }
+    } catch (err) {
+      console.warn('calendar failed', err);
+    } finally {
+      cal.loading = false;
+      renderUpcoming();
+    }
+  }
+
+  async function startFromEvent(id, join) {
+    const e = state.calendar.events.find((x) => x.id === id);
+    if (!e) return;
+    const guests = e.guests || [];
+    const typed = $('#context').value.trim();
+    const context = [e.title, guests.length ? `Participantes: ${guests.join(', ')}` : '', typed].filter(Boolean).join('\n');
+    if (join && e.link) await api.invoke('open:external', { url: e.link });
+    await startMeeting(context, { title: e.title, start: e.start, end: e.end, source: e.source, link: e.link, guests });
+  }
+
   function renderSidePeople() {
     const el = $('#side-people');
     if (!state.people.length) {
@@ -480,12 +564,12 @@
     const st = state.status;
     if (!st) return;
     const dotClass = (chState) => chState === 'running' ? 'ok' : chState === 'starting' || chState === 'rebinding' ? 'warn' : chState === 'error' ? 'err' : 'idle';
-    $('#dot-me').className = `dot ${dotClass(st.audio.me.state)}`;
+    $('#dot-me').className = `live-only dot ${dotClass(st.audio.me.state)}`;
     $('#dot-me').title = st.audio.me.detail || st.audio.me.state;
-    $('#dot-them').className = `dot ${dotClass(st.audio.them.state)}`;
+    $('#dot-them').className = `live-only dot ${dotClass(st.audio.them.state)}`;
     $('#dot-them').title = st.audio.them.detail || st.audio.them.state;
     const sttClass = !st.stt.enabled ? 'err' : (st.stt.me && st.stt.them) ? 'ok' : (st.stt.me || st.stt.them) ? 'warn' : 'idle';
-    $('#dot-stt').className = `dot ${sttClass}`;
+    $('#dot-stt').className = `live-only dot ${sttClass}`;
     $('#dot-stt').title = !st.stt.enabled ? 'sem chave Deepgram' : `mic ${st.stt.me ? 'ok' : 'off'} · sistema ${st.stt.them ? 'ok' : 'off'}`;
 
     const lang = st.lang === 'pt' ? 'pt' : 'en';
@@ -1023,16 +1107,23 @@
   $('#lib-person').addEventListener('change', (e) => { state.lib.person = e.target.value; state.lib.detail = null; runSearch(); });
 
   // meeting start
-  $('#btn-start-meeting').addEventListener('click', async () => {
+  async function startMeeting(briefing, event) {
     const btn = $('#btn-start-meeting');
     btn.disabled = true; btn.textContent = 'Iniciando…';
     try {
-      const r = await api.invoke('session:start', { mode: 'meeting', briefing: $('#context').value, language: $('#meeting-lang').value });
+      const r = await api.invoke('session:start', { mode: 'meeting', briefing, language: $('#meeting-lang').value, event });
       if (r && r.warnings && r.warnings.length) showToast('warn', r.warnings.join(' · '), 8000);
       $('#context').value = '';
     } finally {
       btn.disabled = false; btn.textContent = 'Começar reunião';
     }
+  }
+  $('#btn-start-meeting').addEventListener('click', () => startMeeting($('#context').value));
+  $('#cal-refresh').addEventListener('click', () => refreshCalendar(false));
+  // Keep the list current while the setup screen is up: every 5 min and when the window comes back.
+  setInterval(() => { if (state.phase === 'setup') refreshCalendar(false); }, 5 * 60 * 1000);
+  window.addEventListener('focus', () => {
+    if (state.phase === 'setup' && Date.now() - state.calendar.fetchedAt > 60 * 1000) refreshCalendar(false);
   });
 
   // interview setup
@@ -1105,5 +1196,5 @@
   $('#meeting-lang').addEventListener('change', (e) => localStorage.setItem('meetingLang', e.target.value));
 
   setUiMode(state.uiMode === 'library' ? 'meeting' : state.uiMode);
-  refreshState();
+  refreshState().then(() => refreshCalendar(false));
 })();

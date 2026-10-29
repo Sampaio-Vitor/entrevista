@@ -10,7 +10,8 @@ import { ClaudeSession, type DoneEvent } from './claude';
 import { captureScreen } from './screenshot';
 import { AudioDefaults } from './audioDefaults';
 import { HfpGuard, type HfpState } from './hfpGuard';
-import { SessionStore, speakerNames, type ChatMessage, type SessionKind, type StoredSession } from './sessions';
+import { SessionStore, speakerNames, type ChatMessage, type SessionEvent, type SessionKind, type StoredSession } from './sessions';
+import { CalendarReader, guestNames } from './calendar';
 import { Recorder } from './recorder';
 import { refineTranscript, remapParticipants } from './refine';
 import * as prompts from './prompts';
@@ -26,6 +27,9 @@ const SESSIONS_DIR = path.join(ROOT, 'sessions');
 type Phase = 'setup' | 'live';
 
 const config: AppConfig = loadConfig(ROOT);
+// `entrevista --dev`: keep the window visible to screenshots and screen sharing.
+const devMode = process.argv.includes('--dev') || process.env.ENTREVISTA_DEV === '1';
+if (devMode) config.window.hideFromScreenCapture = false;
 const env = loadEnv(ROOT);
 const deepgramKey = env.DEEPGRAM_API_KEY || process.env.DEEPGRAM_API_KEY || '';
 
@@ -38,6 +42,7 @@ let sessionLanguage: string = config.stt.language;
 
 const audio = new AudioEngine(NATIVE_DIR);
 const audioDefaults = new AudioDefaults(NATIVE_DIR);
+const calendar = new CalendarReader(NATIVE_DIR);
 const hfpGuard = new HfpGuard(audioDefaults, config.audio.forceBuiltInMicWhenBluetooth);
 const transcript = new Transcript();
 const sessions = new SessionStore(SESSIONS_DIR, config.meeting.myName);
@@ -533,7 +538,7 @@ function connectStt(channel: Channel): void {
 
 // ---------- session lifecycle ----------
 
-async function startSession(kind: SessionKind, briefing: string, language: string): Promise<{ ok: boolean; failures: Array<{ channel: Channel; error: string }>; warnings: string[] }> {
+async function startSession(kind: SessionKind, briefing: string, language: string, event?: SessionEvent): Promise<{ ok: boolean; failures: Array<{ channel: Channel; error: string }>; warnings: string[] }> {
   const warnings: string[] = [];
   if (phase === 'live') return { ok: true, failures: [], warnings };
   mode = kind;
@@ -558,7 +563,7 @@ async function startSession(kind: SessionKind, briefing: string, language: strin
 
   transcript.clear();
   transcript.setLabeler(kind === 'meeting' ? (spk) => liveNames()[spk] ?? spk : defaultLabel);
-  const session = sessions.begin(kind, briefing, sessionLanguage); // a new interview/meeting every Começar
+  const session = sessions.begin(kind, briefing, sessionLanguage, kind === 'meeting' ? event : undefined); // a new interview/meeting every Começar
 
   try {
     if (kind === 'interview') {
@@ -743,8 +748,30 @@ ipcMain.handle('setup:reset', () => {
   return { ok: true };
 });
 
-ipcMain.handle('session:start', (_e, payload: { mode?: SessionKind; briefing?: string; language?: string }) =>
-  startSession(payload?.mode === 'interview' ? 'interview' : 'meeting', payload?.briefing ?? '', String(payload?.language ?? '')));
+ipcMain.handle('session:start', (_e, payload: { mode?: SessionKind; briefing?: string; language?: string; event?: SessionEvent }) =>
+  startSession(payload?.mode === 'interview' ? 'interview' : 'meeting', payload?.briefing ?? '', String(payload?.language ?? ''), sessionEvent(payload?.event)));
+
+function sessionEvent(raw: unknown): SessionEvent | undefined {
+  const e = raw as Partial<SessionEvent> | undefined;
+  if (!e || typeof e.title !== 'string' || typeof e.start !== 'number' || typeof e.end !== 'number') return undefined;
+  return {
+    title: e.title, start: e.start, end: e.end, source: String(e.source ?? ''),
+    ...(typeof e.link === 'string' && /^https?:\/\//.test(e.link) ? { link: e.link } : {}),
+    guests: Array.isArray(e.guests) ? e.guests.map(String) : [],
+  };
+}
+
+// Upcoming meetings: events still running or ahead that have a call link or
+// other guests (skips gym, lunch and other personal blocks).
+ipcMain.handle('calendar:upcoming', async (_e, payload: { request?: boolean }) => {
+  const snap = await calendar.fetch({ request: Boolean(payload?.request) });
+  const now = Date.now();
+  const events = snap.events
+    .filter((e) => e.end > now && (e.link || e.attendees.some((a) => !a.me)))
+    .map((e) => ({ ...e, guests: guestNames(e) }));
+  if (snap.error) console.warn('[calendar]', snap.error);
+  return { access: snap.access, events, fetchedAt: snap.fetchedAt };
+});
 ipcMain.handle('session:stop', () => stopSession());
 ipcMain.handle('transcript:clear', () => { transcript.clear(); answerSinceId = 0; codeSinceId = 0; liveChatSinceId = 0; return { ok: true }; });
 ipcMain.handle('answer:ask', () => { askAnswer(); return { ok: true }; });
@@ -795,7 +822,7 @@ ipcMain.handle('meeting:refine', (_e, payload: { id: string }) => { void runRefi
 ipcMain.handle('window:toggle', () => { toggleWindow(); return { ok: true }; });
 ipcMain.handle('window:opacity', (_e, payload: { alpha: number }) => { setAlpha(Number(payload?.alpha), false); return { alpha }; });
 
-ipcMain.handle('permissions:request', async (_e, payload: { which: 'microphone' | 'screen' | 'audio' }) => {
+ipcMain.handle('permissions:request', async (_e, payload: { which: 'microphone' | 'screen' | 'audio' | 'calendars' }) => {
   if (process.platform !== 'darwin') return { ok: true };
   switch (payload?.which) {
     case 'microphone':
@@ -805,6 +832,9 @@ ipcMain.handle('permissions:request', async (_e, payload: { which: 'microphone' 
       return { ok: true };
     case 'audio':
       await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture');
+      return { ok: true };
+    case 'calendars':
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars');
       return { ok: true };
     default:
       return { ok: false };

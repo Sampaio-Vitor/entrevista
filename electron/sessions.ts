@@ -64,6 +64,17 @@ export interface StoredSession {
   refineError?: string;
   /** Live transcript kept after the offline pass replaced `segments`. */
   liveSegments?: Segment[];
+  /** Calendar event the meeting was started from. */
+  event?: SessionEvent;
+}
+
+export interface SessionEvent {
+  title: string;
+  start: number;
+  end: number;
+  source: string;
+  link?: string;
+  guests: string[];
 }
 
 export interface SessionSummary {
@@ -116,13 +127,14 @@ export class SessionStore {
     return this.current;
   }
 
-  begin(kind: SessionKind, briefing: string, language: string): StoredSession {
+  begin(kind: SessionKind, briefing: string, language: string, event?: SessionEvent): StoredSession {
     if (this.current) this.end();
     const startedAt = Date.now();
     const id = new Date(startedAt).toISOString().replace(/[:.]/g, '-').slice(0, 19);
     this.current = {
       id, kind, startedAt, endedAt: null, briefing, language,
       segments: [], answers: [], participants: {}, summary: null, chat: [], audio: [], refined: 'none',
+      ...(event ? { event } : {}),
     };
     this.write(this.current);
     return this.current;
@@ -380,6 +392,12 @@ export class SessionStore {
       lines.push('');
       lines.push(`Duração: ${minutes} min · ${s.segments.length} falas${s.refined === 'done' ? ' · transcrição refinada' : ''}`);
       lines.push('');
+      if (s.event) {
+        const hhmm = (ts: number) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        lines.push(`Evento: ${s.event.title} (${hhmm(s.event.start)}–${hhmm(s.event.end)}, ${s.event.source})${s.event.link ? ` · ${s.event.link}` : ''}`);
+        if (s.event.guests.length) lines.push(`Convidados: ${s.event.guests.join(', ')}`);
+        lines.push('');
+      }
       if (s.briefing.trim()) {
         lines.push('## Contexto');
         lines.push('');
