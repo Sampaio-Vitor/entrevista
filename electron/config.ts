@@ -149,8 +149,42 @@ export function loadEnv(root: string): Record<string, string> {
   return out;
 }
 
+/**
+ * Write the settings the UI changed into config.json, keeping every key the
+ * patch does not touch. Returns the full config (defaults + file).
+ */
+export function saveConfigPatch(root: string, patch: Record<string, unknown>): AppConfig {
+  const file = path.join(root, 'config.json');
+  // An unreadable file throws here instead of being replaced by the patch alone.
+  const raw = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+  const next = deepMerge(raw, patch as any);
+  fs.writeFileSync(file, formatJson(next) + '\n');
+  return deepMerge(DEFAULT_CONFIG, next);
+}
+
+/** JSON with small flat objects on one line, like the hand-written config.json. */
+function formatJson(v: unknown, indent = ''): string {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return JSON.stringify(v);
+  const entries = Object.entries(v as Record<string, unknown>);
+  if (!entries.length) return '{}';
+  const flat = entries.every(([, x]) => x === null || typeof x !== 'object');
+  const oneLine = `{ ${entries.map(([k, x]) => `${JSON.stringify(k)}: ${JSON.stringify(x)}`).join(', ')} }`;
+  if (flat && indent.length + oneLine.length <= 80) return oneLine;
+  const inner = indent + '  ';
+  return `{\n${entries.map(([k, x]) => `${inner}${JSON.stringify(k)}: ${formatJson(x, inner)}`).join(',\n')}\n${indent}}`;
+}
+
+/** Resume, experience and stories: the part of the interview briefing that stays between interviews. */
 export function loadProfile(root: string): string {
   const file = path.join(root, 'profile.md');
   if (!fs.existsSync(file)) return '';
   return fs.readFileSync(file, 'utf8').trim();
+}
+
+export function saveProfile(root: string, text: string): void {
+  fs.writeFileSync(path.join(root, 'profile.md'), text.trim() + '\n');
+}
+
+export function profileSavedAt(root: string): number | null {
+  try { return fs.statSync(path.join(root, 'profile.md')).mtimeMs; } catch { return null; }
 }

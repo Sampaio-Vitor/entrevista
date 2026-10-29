@@ -1,7 +1,7 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, shell, systemPreferences } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, loadEnv, loadProfile, type AppConfig, type ModelConfig } from './config';
+import { loadConfig, loadEnv, loadProfile, profileSavedAt, saveConfigPatch, saveProfile, type AppConfig, type ModelConfig } from './config';
 import { AudioEngine, type Channel, type ChannelStatus } from './audio';
 import { DeepgramStream } from './stt/deepgram';
 import { Transcript, defaultLabel, type Segment, type SpeakerId } from './transcript';
@@ -75,6 +75,8 @@ const jobs = new Map<string, { stage: JobStage; error?: string }>();
 let answerLang: Lang = initialLang(config.stt.language);
 let heardMyLang = false;
 let lastToastAt = new Map<string, number>();
+// Set once the live session's system channel carries sound (see the level handler).
+let systemAudioHeard = false;
 
 app.setName('Entrevista');
 
@@ -286,7 +288,8 @@ function makeSession(label: SessionLabel, mc: ModelConfig, systemPrompt: string)
     }
     if (e.meta.kind === 'summary') {
       const id = String(e.meta.sessionId);
-      const updated = sessions.update(id, { summary: { text: e.text, at: Date.now(), model: e.model } });
+      const { title, text } = prompts.splitSummaryTitle(e.text);
+      const updated = sessions.update(id, { summary: { text, at: Date.now(), model: e.model, ...(title ? { title } : {}) } });
       summaryJobs.get(id)?.dispose();
       summaryJobs.delete(id);
       setJob(id, 'done');
@@ -538,17 +541,12 @@ function connectStt(channel: Channel): void {
 
 // ---------- session lifecycle ----------
 
-async function startSession(kind: SessionKind, briefing: string, language: string, event?: SessionEvent): Promise<{ ok: boolean; failures: Array<{ channel: Channel; error: string }>; warnings: string[] }> {
+async function startSession(kind: SessionKind, briefing: string, language: string, extra: { event?: SessionEvent; job?: string } = {}): Promise<{ ok: boolean; failures: Array<{ channel: Channel; error: string }>; warnings: string[] }> {
   const warnings: string[] = [];
   if (phase === 'live') return { ok: true, failures: [], warnings };
   mode = kind;
   sessionLanguage = kind === 'meeting' ? (language.trim() || config.meeting.language) : config.stt.language;
-
-  if (kind === 'interview') {
-    try { fs.writeFileSync(path.join(ROOT, 'profile.md'), briefing.trim() + '\n'); } catch (err: any) {
-      warnings.push(`profile.md não salvo: ${err?.message}`);
-    }
-  }
+  systemAudioHeard = false;
 
   setupSession?.dispose();
   setupSession = null;
@@ -563,7 +561,7 @@ async function startSession(kind: SessionKind, briefing: string, language: strin
 
   transcript.clear();
   transcript.setLabeler(kind === 'meeting' ? (spk) => liveNames()[spk] ?? spk : defaultLabel);
-  const session = sessions.begin(kind, briefing, sessionLanguage, kind === 'meeting' ? event : undefined); // a new interview/meeting every Começar
+  const session = sessions.begin(kind, briefing, sessionLanguage, kind === 'meeting' ? { event: extra.event } : { job: extra.job }); // a new interview/meeting every Começar
 
   try {
     if (kind === 'interview') {
@@ -670,6 +668,126 @@ async function stopSession(): Promise<{ savedId: string | null }> {
   return { savedId: saved?.id ?? null };
 }
 
+// ---------- settings ----------
+
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+const HOTKEY_NAMES = ['answer', 'code', 'toggleWindow', 'language', 'opacityUp', 'opacityDown'] as const;
+type Hotkeys = AppConfig['hotkeys'];
+
+/** What the renderer gets: everything it shows or edits, nothing about the window. */
+function publicConfig() {
+  return {
+    hotkeys: config.hotkeys,
+    answer: config.answer,
+    code: config.code,
+    setup: config.setup,
+    stt: config.stt,
+    meeting: config.meeting,
+  };
+}
+
+/** Registers every global shortcut; returns the ones another app already owns. */
+function registerHotkeys(hk: Hotkeys): string[] {
+  globalShortcut.unregisterAll();
+  const bindings: Array<[string, () => void]> = [
+    [hk.answer, askAnswer],
+    [hk.code, () => { void askCode(); }],
+    [hk.toggleWindow, toggleWindow],
+    [hk.language, toggleAnswerLang],
+    [hk.opacityUp, () => setAlpha(alpha + 0.1)],
+    [hk.opacityDown, () => setAlpha(alpha - 0.1)],
+  ];
+  const failed: string[] = [];
+  for (const [accel, fn] of bindings) {
+    let ok = false;
+    try { ok = globalShortcut.register(accel, fn); } catch { ok = false; }
+    if (!ok) failed.push(accel);
+  }
+  return failed;
+}
+
+function cleanModel(raw: any): Partial<ModelConfig> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const out: Partial<ModelConfig> = {};
+  if (typeof raw.model === 'string' && /^[a-z0-9][a-z0-9.\-[\]]{0,59}$/i.test(raw.model)) out.model = raw.model;
+  if (EFFORTS.includes(raw.effort)) out.effort = raw.effort;
+  return Object.keys(out).length ? out : null;
+}
+
+/** Keeps only the settings the Ajustes sheet edits, with valid values. */
+function cleanSettings(raw: any): Record<string, any> {
+  const patch: Record<string, any> = {};
+  if (!raw || typeof raw !== 'object') return patch;
+  for (const key of ['answer', 'code', 'setup'] as const) {
+    const m = cleanModel(raw[key]);
+    if (m) patch[key] = m;
+  }
+  if (raw.meeting && typeof raw.meeting === 'object') {
+    const meeting: Record<string, any> = {};
+    for (const flag of ['diarize', 'saveAudio', 'refine', 'autoSummary'] as const) {
+      if (typeof raw.meeting[flag] === 'boolean') meeting[flag] = raw.meeting[flag];
+    }
+    for (const key of ['summary', 'chat'] as const) {
+      const m = cleanModel(raw.meeting[key]);
+      if (m) meeting[key] = m;
+    }
+    if (Object.keys(meeting).length) patch.meeting = meeting;
+  }
+  if (raw.hotkeys && typeof raw.hotkeys === 'object') {
+    const hotkeys: Partial<Hotkeys> = {};
+    for (const name of HOTKEY_NAMES) {
+      const v = raw.hotkeys[name];
+      if (typeof v === 'string' && /^[\w+\-=,./;'`[\]\\]{1,60}$/.test(v) && v.includes('+')) hotkeys[name] = v;
+    }
+    if (Object.keys(hotkeys).length) patch.hotkeys = hotkeys;
+  }
+  return patch;
+}
+
+/** Ajustes: validate, register new shortcuts, write config.json, apply in memory. */
+function saveSettings(raw: unknown): { ok: boolean; error?: string; config?: ReturnType<typeof publicConfig> } {
+  const patch = cleanSettings(raw);
+  if (!Object.keys(patch).length) return { ok: false, error: 'Ajuste inválido.' };
+  const previous = config.hotkeys;
+  if (patch.hotkeys) {
+    const next: Hotkeys = { ...config.hotkeys, ...patch.hotkeys };
+    const values = Object.values(next);
+    if (new Set(values).size !== values.length) {
+      registerHotkeys(previous);
+      return { ok: false, error: 'Esse atalho já é de outra ação.' };
+    }
+    const failed = registerHotkeys(next);
+    if (failed.length) {
+      registerHotkeys(previous);
+      return { ok: false, error: `Atalho em uso por outro app: ${failed.join(', ')}.` };
+    }
+  }
+  let merged: AppConfig;
+  try {
+    merged = saveConfigPatch(ROOT, patch);
+  } catch (err: any) {
+    if (patch.hotkeys) registerHotkeys(previous);
+    return { ok: false, error: `config.json não salvo: ${err?.message ?? err}` };
+  }
+  // Only the edited sections: window settings (and the --dev override) stay as they are.
+  for (const key of Object.keys(patch) as Array<keyof AppConfig>) (config as any)[key] = merged[key];
+  console.log(`[settings] saved ${JSON.stringify(patch)}`);
+  return { ok: true, config: publicConfig() };
+}
+
+function appStateFile(): string {
+  return path.join(app.getPath('userData'), 'app-state.json');
+}
+
+/** Small facts the app learns about this Mac (not settings), kept next to window.json. */
+function loadAppState(): { systemAudioOkAt?: number } {
+  try { return JSON.parse(fs.readFileSync(appStateFile(), 'utf8')); } catch { return {}; }
+}
+
+function saveAppState(patch: { systemAudioOkAt?: number }): void {
+  try { fs.writeFileSync(appStateFile(), JSON.stringify({ ...loadAppState(), ...patch })); } catch { /* ignore */ }
+}
+
 // ---------- wiring ----------
 
 audio.on('pcm', (channel: Channel, chunk: Buffer) => {
@@ -677,7 +795,15 @@ audio.on('pcm', (channel: Channel, chunk: Buffer) => {
   recorder.write(channel, chunk);
 });
 audio.on('speech-ended', (channel: Channel) => stt[channel]?.finalize());
-audio.on('level', (channel: Channel, rms: number) => send('level', { channel, rms }));
+audio.on('level', (channel: Channel, rms: number) => {
+  send('level', { channel, rms });
+  // macOS hands the tap silence until "System Audio Recording" is allowed, so
+  // any real sound on the system channel proves the permission works.
+  if (channel === 'them' && phase === 'live' && !systemAudioHeard && rms > 0.002) {
+    systemAudioHeard = true;
+    saveAppState({ systemAudioOkAt: Date.now() });
+  }
+});
 audio.on('status', (st: ChannelStatus) => { channelStatus[st.channel] = st; pushStatus(); });
 audio.on('error', (e: { channel: Channel; error: Error }) => {
   toast('error', `Áudio ${e.channel === 'me' ? 'mic' : 'sistema'}: ${e.error.message}`, `audio-${e.channel}`);
@@ -706,16 +832,10 @@ ipcMain.handle('state:get', async () => {
     mode,
     startedAt,
     sessionId: live?.id ?? null,
-    config: {
-      hotkeys: config.hotkeys,
-      answer: config.answer,
-      code: config.code,
-      setup: config.setup,
-      stt: config.stt,
-      window: config.window,
-      meeting: config.meeting,
-    },
-    briefing: loadProfile(ROOT),
+    config: publicConfig(),
+    profile: loadProfile(ROOT),
+    profileSavedAt: profileSavedAt(ROOT),
+    systemAudioOkAt: loadAppState().systemAudioOkAt ?? null,
     deepgramKey: Boolean(deepgramKey),
     claudeBinary,
     native: { available: audio.available(), error: audio.unavailableReason() },
@@ -748,8 +868,31 @@ ipcMain.handle('setup:reset', () => {
   return { ok: true };
 });
 
-ipcMain.handle('session:start', (_e, payload: { mode?: SessionKind; briefing?: string; language?: string; event?: SessionEvent }) =>
-  startSession(payload?.mode === 'interview' ? 'interview' : 'meeting', payload?.briefing ?? '', String(payload?.language ?? ''), sessionEvent(payload?.event)));
+ipcMain.handle('session:start', (_e, payload: { mode?: SessionKind; briefing?: string; job?: string; language?: string; event?: SessionEvent }) => {
+  if (payload?.mode === 'interview') {
+    // The copilot gets the saved profile plus the notes for this interview.
+    const job = String(payload?.job ?? '');
+    return startSession('interview', prompts.interviewBriefing(loadProfile(ROOT), job), '', { job });
+  }
+  return startSession('meeting', String(payload?.briefing ?? ''), String(payload?.language ?? ''), { event: sessionEvent(payload?.event) });
+});
+
+ipcMain.handle('profile:save', (_e, payload: { text?: string }) => {
+  try {
+    saveProfile(ROOT, String(payload?.text ?? ''));
+    return { ok: true, profile: loadProfile(ROOT), savedAt: profileSavedAt(ROOT) };
+  } catch (err: any) {
+    return { ok: false, error: `profile.md não salvo: ${err?.message ?? err}` };
+  }
+});
+
+ipcMain.handle('settings:save', (_e, payload: unknown) => saveSettings(payload));
+// While the settings sheet records a new shortcut, our own shortcuts must not swallow the keys.
+ipcMain.handle('hotkeys:suspend', (_e, payload: { suspend?: boolean }) => {
+  if (payload?.suspend) globalShortcut.unregisterAll();
+  else registerHotkeys(config.hotkeys);
+  return { ok: true };
+});
 
 function sessionEvent(raw: unknown): SessionEvent | undefined {
   const e = raw as Partial<SessionEvent> | undefined;
@@ -826,6 +969,11 @@ ipcMain.handle('permissions:request', async (_e, payload: { which: 'microphone' 
   if (process.platform !== 'darwin') return { ok: true };
   switch (payload?.which) {
     case 'microphone':
+      // Once denied, macOS no longer prompts: only System Settings can turn it back on.
+      if (systemPreferences.getMediaAccessStatus('microphone') === 'denied') {
+        await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+        return { ok: true };
+      }
       return { ok: await systemPreferences.askForMediaAccess('microphone') };
     case 'screen':
       await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
@@ -853,21 +1001,9 @@ ipcMain.handle('open:external', async (_e, payload: { url: string }) => {
 app.whenReady().then(() => {
   createWindow();
 
-  const bindings: Array<[string, () => void]> = [
-    [config.hotkeys.answer, askAnswer],
-    [config.hotkeys.code, () => { void askCode(); }],
-    [config.hotkeys.toggleWindow, toggleWindow],
-    [config.hotkeys.language, toggleAnswerLang],
-    [config.hotkeys.opacityUp, () => setAlpha(alpha + 0.1)],
-    [config.hotkeys.opacityDown, () => setAlpha(alpha - 0.1)],
-  ];
-  for (const [accel, fn] of bindings) {
-    let ok = false;
-    try { ok = globalShortcut.register(accel, fn); } catch { ok = false; }
-    if (!ok) {
-      // Another app owns it. Report after the renderer is up.
-      setTimeout(() => toast('error', `Atalho ${accel} não pôde ser registrado (em uso por outro app). Troque em config.json.`), 1500);
-    }
+  for (const accel of registerHotkeys(config.hotkeys)) {
+    // Another app owns it. Report after the renderer is up.
+    setTimeout(() => toast('error', `Atalho ${accel} não pôde ser registrado (em uso por outro app). Troque em Ajustes.`), 1500);
   }
 
   app.on('activate', () => {

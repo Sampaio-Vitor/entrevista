@@ -45,20 +45,28 @@ ${briefing.trim() || '(empty)'}`;
 }
 
 export function setupSystemPrompt(): string {
-  return `You help a candidate prepare the briefing their live interview copilot will use during an interview in English or Brazilian Portuguese. The copilot later gets this briefing as its only knowledge about the candidate.
+  return `You help a candidate prepare for one specific interview, in English or Brazilian Portuguese. During the interview a live copilot answers for them; it gets the candidate's full saved profile (resume, experience, stories) plus the briefing you write here, which is about THIS interview.
 
 Conversation rules:
-- The candidate pastes raw context first (resume, job description, company, notes), in Portuguese or English.
-- Ask at most 3 short questions, all in one message, only about what is missing to tailor answers: target role and company stage, what to emphasize, must-mention stories or numbers, things to avoid.
+- The candidate's first message has their PROFILE and their raw NOTES about this interview (company, role, interviewer, job description), in Portuguese or English. The notes may be empty.
+- Ask at most 3 short questions, all in one message, only about what is missing to tailor answers: company and stage, interviewer and format, what to emphasize, stories to bring, things to avoid.
 - Keep every message short. Reply in the candidate's language for the chat.
-- When you have enough (usually after one round of answers, or immediately if the context is already rich), output the final briefing in English between <briefing> and </briefing> tags, and nothing after the closing tag. The briefing is for the copilot, so it must be dense and concrete:
-  ## Candidate: 3-line summary (name optional, seniority, stack, domains).
-  ## Target: role, company, stage, what they are hiring for.
-  ## Stories: 4 to 8 STAR one-liners with real numbers from the context.
+- When you have enough (usually after one round of answers, or immediately if the notes are already rich), output the final briefing in English between <briefing> and </briefing> tags, and nothing after the closing tag. It is for the copilot, so it must be dense and concrete, and it must not repeat the profile:
+  ## Target: role, company, stage, interviewer, what they are hiring for.
+  ## Pitch: 2 lines on how the candidate fits this role.
+  ## Stories: 4 to 8 STAR one-liners picked from the profile for this role, with real numbers.
   ## Emphasize: 3 to 5 strengths to steer toward.
   ## Avoid: gaps or topics to handle carefully, with the suggested framing.
   ## Tone: how the candidate wants to come across.
 - Never invent facts. If a number or name is missing, leave a placeholder like [years] so the candidate fills it.`;
+}
+
+/** Saved profile + notes for this interview: what the answer and code copilots know about me. */
+export function interviewBriefing(profile: string, job: string): string {
+  const parts: string[] = [];
+  if (profile.trim()) parts.push(`## Profile (resume, experience, stories)\n${profile.trim()}`);
+  if (job.trim()) parts.push(`## This interview\n${job.trim()}`);
+  return parts.join('\n\n');
 }
 
 const LANG_NAME: Record<Lang, string> = { en: 'English', pt: 'Brazilian Portuguese' };
@@ -119,7 +127,8 @@ const LANG_INSTRUCTION: Record<Lang, string> = {
 export function meetingSummarySystemPrompt(): string {
   return `You write the minutes of a meeting from its transcript. Speakers are labeled with their names (or "Participante N" when unnamed). You never invent facts, names, dates or numbers that are not in the transcript.
 
-Output, in Markdown, exactly these sections and nothing else (skip a section only if it would be empty, then write "Nenhum." / "None." under it):
+Output, in Markdown, a title line and then exactly these sections and nothing else (skip a section only if it would be empty, then write "Nenhum." / "None." under it):
+# <short title of the meeting: 3 to 8 words, what it was about, no date>
 ## Resumo
 3 to 6 sentences: what the meeting was about and what was concluded.
 ## Decisões
@@ -131,7 +140,14 @@ Bullets. Questions raised and not answered.
 ## Próximos passos
 Bullets. What happens next, with dates if said.
 
-Rules: concise, factual, no preamble, no headers other than the five above, no quotes longer than one line. Keep technical terms as spoken. The transcript comes from automatic speech recognition: ignore filler and obvious transcription noise.`;
+Rules: concise, factual, no preamble, no headers other than the title and the five above, no quotes longer than one line. Keep technical terms as spoken. The transcript comes from automatic speech recognition: ignore filler and obvious transcription noise.`;
+}
+
+/** The summary opens with "# <title>": split it off so the stored text is only the minutes. */
+export function splitSummaryTitle(text: string): { title: string | null; text: string } {
+  const m = text.match(/^\s*#(?!#)\s*([^\n]+)\n?/);
+  if (!m) return { title: null, text };
+  return { title: m[1].trim().replace(/[.#*]+$/, '').trim() || null, text: text.slice(m[0].length).replace(/^\s+/, '') };
 }
 
 export function meetingSummaryUserMessage(args: { context: string; participants: string[]; transcript: string; lang: Lang }): string {

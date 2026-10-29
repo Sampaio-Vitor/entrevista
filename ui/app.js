@@ -24,12 +24,16 @@
     answers: [],          // newest first (interview)
     setupChat: [],        // interview preparation dialogue
     chatStarted: false,
-    sessions: [],         // past interviews (summaries)
+    prepOpen: false,      // preparation drawer
+    profile: '',          // profile.md: resume and stories, shared by every interview
+    profileSavedAt: null,
+    systemAudioOkAt: null, // last time the system channel carried sound
+    loaded: false,        // first state:get done
     meetings: [],         // past meetings (summaries)
     people: [],
     jobs: {},             // sessionId -> { stage, error }
     viewing: null,        // a loaded past session, read-only
-    lib: { tab: 'meetings', q: '', person: '', results: [], person: '', detail: null },
+    lib: { tab: 'all', q: '', person: '', results: [], detail: null },
     editingSpeaker: null,
     summaryStreaming: null, // { sessionId, text }
     calendar: { access: null, events: [], fetchedAt: 0, loading: false }, // upcoming meetings
@@ -144,6 +148,22 @@
     return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
+  /** 28/10 */
+  function fmtShort(ts) {
+    return new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  }
+
+  /** hoje · ontem · qua 28/10 · 28/10/25 */
+  function fmtDay(ts) {
+    const d = new Date(ts); d.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const diff = Math.round((today - d) / 86400000);
+    if (diff === 0) return 'hoje';
+    if (diff === 1) return 'ontem';
+    if (d.getFullYear() !== today.getFullYear()) return new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    return `${new Date(ts).toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '')} ${fmtShort(ts)}`;
+  }
+
   let toastTimer = null;
   function showToast(level, message, ms) {
     const el = $('#toast');
@@ -205,11 +225,15 @@
   function showView() {
     const viewing = Boolean(state.viewing);
     const live = state.phase === 'live';
-    const library = !live && !viewing && state.uiMode === 'library';
-    $('#view-setup').classList.toggle('hidden', live || viewing || library);
+    const home = !live && !viewing;
+    const library = home && state.uiMode === 'library';
+    $('#topbar').classList.toggle('hidden', !home);
+    $('#view-setup').classList.toggle('hidden', !home || library);
     $('#view-library').classList.toggle('hidden', !library);
-    $('#view-live').classList.toggle('hidden', !(live || viewing));
+    $('#view-live').classList.toggle('hidden', home);
     $('#view-live').classList.toggle('readonly', viewing && !live);
+    $('#prep').classList.toggle('hidden', !(home && state.uiMode === 'interview' && state.prepOpen));
+    if (!home) closeOverlays();
     applyBodyMode();
   }
 
@@ -219,111 +243,213 @@
     $$('.mode-tabs .tab').forEach((b) => b.classList.toggle('active', b.dataset.mode === m));
     $('#panel-meeting').classList.toggle('hidden', m !== 'meeting');
     $('#panel-interview').classList.toggle('hidden', m !== 'interview');
-    $('#brand-title').textContent = m === 'interview' ? 'Entrevista' : 'Reuniões';
-    $('#brand-sub').textContent = m === 'interview'
-      ? 'Copiloto ao vivo. Transcreve os dois lados e responde quando você pedir.'
-      : 'Grava os dois lados sem bot, separa quem falou e guarda tudo no seu Mac.';
     showView();
+    renderReadiness();
     if (m === 'library') openLibrary();
   }
 
-  // ---------- setup: meeting ----------
+  function closeOverlays() {
+    stopRecording(false);
+    $('#status-pop').classList.add('hidden');
+    $('#settings-modal').classList.add('hidden');
+    $('#profile-modal').classList.add('hidden');
+  }
 
-  function meetingCardHtml(s, withMatches) {
+  // ---------- home: readiness (pill, diagnostics, blocking issues) ----------
+
+  /** One line per dependency. `err` items also show up above the page with their fix. */
+  function readiness() {
+    const items = [];
+    const add = (level, label, value, extra) => items.push({ level, label, value, ...(extra || {}) });
+    add(state.claudeBinary ? 'ok' : 'err', 'Claude Code', state.claudeBinary ? 'ok' : 'não encontrado', {
+      title: state.claudeBinary || '',
+      issue: 'Claude Code não encontrado: sem respostas, resumo e chat. Instale e rode claude uma vez no terminal.',
+    });
+    add(state.deepgramKey ? 'ok' : 'err', 'Deepgram', state.deepgramKey ? 'ok' : 'sem chave', {
+      issue: 'Falta a chave Deepgram (DEEPGRAM_API_KEY no .env). Grava o áudio, mas sem transcrição.',
+    });
+    add(state.native.available ? 'ok' : 'err', 'Motor de áudio', state.native.available ? 'ok' : 'indisponível', {
+      issue: `Motor de áudio nativo indisponível: ${state.native.error || 'erro desconhecido'}.`,
+    });
+    const mic = state.permissions.microphone;
+    add(mic === 'granted' ? 'ok' : mic === 'not-determined' ? 'warn' : 'err', 'Microfone',
+      mic === 'granted' ? 'permitido' : mic === 'not-determined' ? 'pede ao começar' : 'negado', {
+        issue: 'Microfone negado: sua voz não é gravada.',
+        perm: 'microphone', action: mic === 'not-determined' ? 'pedir' : 'abrir ajustes',
+      });
+    add(state.systemAudioOkAt ? 'ok' : 'warn', 'Áudio do sistema',
+      state.systemAudioOkAt ? `ok · ${fmtShort(state.systemAudioOkAt)}` : 'pede na primeira captura',
+      { perm: 'audio', action: 'ajustes', title: 'Confirmado quando o canal do sistema traz som numa sessão.' });
+    if (state.uiMode === 'interview') {
+      const scr = state.permissions.screen;
+      add(scr === 'granted' ? 'ok' : scr === 'not-determined' ? 'warn' : 'err', 'Tela (Código)',
+        scr === 'granted' ? 'permitida' : scr === 'not-determined' ? 'pede no primeiro screenshot' : 'negada', {
+          issue: 'Gravação de tela negada: o atalho de Código não funciona.',
+          perm: 'screen', action: 'abrir ajustes',
+        });
+    }
+    const hs = state.headset || {};
+    if (hs.outputName) {
+      add(hs.bluetooth ? 'warn' : 'ok', 'Saída', hs.bluetooth ? `${hs.outputName} · usa o mic do Mac` : hs.outputName, {
+        title: hs.bluetooth ? 'Bluetooth: o app usa o microfone do Mac e o define como padrão do sistema durante a sessão.' : '',
+      });
+    } else if (!hs.helper) {
+      add('warn', 'Helper de áudio', 'rode npm install', { title: 'native/audio-defaults não compilado' });
+    }
+    return items;
+  }
+
+  function renderReadiness() {
+    if (!state.loaded) return;
+    const items = readiness();
+    const issues = items.filter((i) => i.level === 'err');
+    $('#status-pill').classList.toggle('warn', issues.length > 0);
+    $('#status-pill .dot').className = `dot ${issues.length ? 'warn' : 'ok'}`;
+    $('#status-text').textContent = issues.length ? `${issues.length} ${issues.length === 1 ? 'pendência' : 'pendências'}` : 'Pronto';
+    $('#status-pop-title').textContent = issues.length ? 'Falta algo para gravar tudo' : 'Pronto para gravar';
+    $('#checklist').innerHTML = items.map((i) => `
+      <li title="${esc(i.title || '')}"><span class="dot ${i.level}"></span><span class="ck-label">${esc(i.label)}</span><span class="ck-value ${i.level}">${esc(i.value)}</span>${i.perm && i.level !== 'ok' ? `<button class="link" data-perm="${i.perm}" type="button">${esc(i.action)}</button>` : '<span></span>'}</li>`).join('');
+    const box = $('#issues');
+    box.innerHTML = issues.map((i) => `
+      <div class="issue"><span class="issue-icon">⚠</span><span class="grow">${esc(i.issue)}</span>${i.perm ? `<button class="link" data-perm="${i.perm}" type="button">${esc(i.action)}</button>` : ''}</div>`).join('');
+    box.classList.toggle('hidden', !issues.length);
+  }
+
+  // ---------- home: session rows (recent meetings, library) ----------
+
+  /** "jonatas@acme.com" or "Jonatas Silva" -> "Jonatas". */
+  function shortGuest(g) {
+    const s = String(g || '').trim();
+    const base = s.includes('@') ? s.split('@')[0] : s;
+    const first = base.split(/[\s._-]+/).find(Boolean) || base;
+    return first.charAt(0).toUpperCase() + first.slice(1);
+  }
+
+  /** "Ana", "Ana e Bruno", "Ana, Bruno, Caio e mais 4". */
+  function namesLine(names, max = 3) {
+    const list = (names || []).filter(Boolean);
+    if (list.length > max) return `${list.slice(0, max).join(', ')} e mais ${list.length - max}`;
+    if (list.length > 1) return `${list.slice(0, -1).join(', ')} e ${list[list.length - 1]}`;
+    return list[0] || '';
+  }
+
+  function sessionStatus(s) {
     const job = state.jobs[s.id];
-    const chips = [];
-    if (job && job.stage !== 'done') chips.push(`<span class="chip ${job.stage === 'error' ? 'err' : 'busy'}">${esc(jobLabel(job))}</span>`);
-    else if (s.refined === 'done') chips.push('<span class="chip ok">refinada</span>');
-    if (s.hasSummary) chips.push('<span class="chip">resumo</span>');
-    const people = (s.participants || []).slice(0, 5).map((p) => `<span class="pp">${esc(p)}</span>`).join('');
-    const matches = withMatches && s.matches && s.matches.length
+    if (job && job.stage !== 'done') return `<span class="st ${job.stage === 'error' ? 'err' : 'busy'}">${esc(jobLabel(job))}</span>`;
+    if (s.refined === 'error') return '<span class="st err">refino falhou</span>';
+    return '';
+  }
+
+  function sessionRowHtml(s, opts) {
+    const o = opts || {};
+    const sub = s.kind === 'meeting'
+      ? namesLine(s.participants && s.participants.length ? s.participants : (s.guests || []).map(shortGuest))
+      : `Entrevista · ${s.answers} ${s.answers === 1 ? 'resposta' : 'respostas'}`;
+    const matches = o.matches && s.matches && s.matches.length
       ? `<ul class="hits">${s.matches.map((m) => `<li><span class="who">${esc(m.speaker)}</span> ${esc(m.text)}</li>`).join('')}</ul>`
       : '';
-    return `<li class="meeting-card" data-id="${esc(s.id)}" title="Abrir reunião">
-      <div class="mc-top"><span class="mc-when">${esc(fmtDate(s.startedAt))} · ${fmtWhen(s.startedAt).slice(6)} · ${fmtDuration(s.durationMs)}</span><span class="mc-chips">${chips.join('')}</span></div>
-      <div class="mc-title">${esc(s.title)}</div>
-      <div class="mc-people">${people || '<span class="muted">sem participantes nomeados</span>'}</div>
-      ${matches}
+    return `<li class="srow" data-id="${esc(s.id)}" title="Abrir">
+      <div class="srow-main">
+        <div class="srow-title">${esc(s.title)}</div>
+        ${sub ? `<div class="srow-sub">${esc(sub)}</div>` : ''}
+        ${matches}
+      </div>
+      <div class="srow-meta"><span>${esc(fmtDay(s.startedAt))} · ${fmtDuration(s.durationMs)}</span>${sessionStatus(s)}</div>
     </li>`;
   }
 
   function renderRecentMeetings() {
     const el = $('#recent-meetings');
-    const list = state.meetings.slice(0, 8);
-    if (!list.length) {
-      el.innerHTML = '<li class="s-empty">Nenhuma ainda. Começar reunião grava, transcreve e salva em sessions/.</li>';
-      return;
-    }
-    el.innerHTML = list.map((s) => meetingCardHtml(s, false)).join('');
-    el.querySelectorAll('li[data-id]').forEach((li) => li.addEventListener('click', () => viewSession(li.dataset.id)));
-    const note = [];
-    if (!state.deepgramKey) note.push('sem transcrição (falta a chave Deepgram)');
-    if (!state.claudeBinary) note.push('sem resumo e chat (Claude não encontrado)');
-    $('#meeting-note').textContent = note.length ? `Vai iniciar ${note.join(' e ')}.` : '';
+    const list = state.meetings.slice(0, 3);
+    el.innerHTML = list.length
+      ? list.map((s) => sessionRowHtml(s)).join('')
+      : '<li class="rows-empty">Nenhuma reunião ainda. O app grava seu microfone e o áudio do Mac em canais separados, sem bot na chamada, e guarda tudo no seu Mac.</li>';
   }
 
-  // ---------- setup: upcoming meetings (macOS calendar) ----------
+  // ---------- home: meeting (calendar + ad-hoc) ----------
 
-  function fmtEventWhen(e) {
-    const hm = (ts) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    const day = new Date(e.start); day.setHours(0, 0, 0, 0);
+  // The next calendar meeting takes over the page when it starts within this window.
+  const HERO_AHEAD_MS = 90 * 60 * 1000;
+
+  function hm(ts) {
+    return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function dayLabel(ts) {
+    const day = new Date(ts); day.setHours(0, 0, 0, 0);
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const diff = Math.round((day - today) / 86400000);
-    const label = diff <= 0 ? 'Hoje' : diff === 1 ? 'Amanhã' : new Date(e.start).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' });
-    return `${label} · ${hm(e.start)}–${hm(e.end)}`;
+    if (diff <= 0) return 'Hoje';
+    if (diff === 1) return 'Amanhã';
+    return new Date(ts).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' }).replace('.', '');
   }
 
-  function eventChip(e) {
+  function heroWhen(e) {
+    const span = `${hm(e.start)}–${hm(e.end)}`;
     const now = Date.now();
-    if (e.start <= now) return '<span class="chip busy">agora</span>';
+    if (e.start <= now) return `<span class="soon">Agora</span> · ${span}`;
     const min = Math.round((e.start - now) / 60000);
-    return min <= 60 ? `<span class="chip">em ${min} min</span>` : '';
+    if (min <= 60) return `<span class="soon">Em ${min} min</span> · ${span}`;
+    return `${esc(dayLabel(e.start))} · ${span}`;
+  }
+
+  function heroHtml(e) {
+    const guests = namesLine((e.guests || []).map(shortGuest));
+    const actions = e.link
+      ? `<button class="btn primary" data-join="${esc(e.id)}" type="button" title="${esc(e.link)}">Entrar e gravar</button><button class="link" data-rec="${esc(e.id)}" type="button">só gravar</button>`
+      : `<button class="btn primary" data-rec="${esc(e.id)}" type="button">Gravar</button>`;
+    return `<div class="hero">
+      <span class="hero-bar"></span>
+      <div class="hero-main">
+        <div class="hero-when">${heroWhen(e)}</div>
+        <div class="hero-title" title="${esc(e.title)}">${esc(e.title || '(sem título)')}</div>
+        ${guests ? `<div class="hero-who">${esc(guests)}</div>` : ''}
+      </div>
+      <div class="hero-actions">${actions}</div>
+    </div>`;
   }
 
   function renderUpcoming() {
     const cal = state.calendar;
-    const block = $('#upcoming-block');
-    block.classList.toggle('hidden', !cal.access || cal.access === 'unavailable');
-    const el = $('#upcoming');
-    if (cal.access === 'notDetermined' || cal.access === 'unknown') {
-      el.innerHTML = '<li class="s-empty">Veja suas reuniões de todas as contas do Calendário do Mac.<button class="link" id="cal-connect" type="button">conectar calendário</button></li>';
-      $('#cal-connect').addEventListener('click', () => refreshCalendar(true));
-      return;
+    const granted = cal.access === 'granted';
+    const events = granted ? cal.events : [];
+    const first = events[0];
+    const hero = first && first.start - Date.now() <= HERO_AHEAD_MS ? first : null;
+    $('#panel-meeting').classList.toggle('has-hero', Boolean(hero));
+    $('#cal-hero').innerHTML = hero ? heroHtml(hero) : '';
+    // The page CSP blocks style attributes; set the calendar color through the CSSOM.
+    if (hero && /^#[0-9a-f]{6}$/i.test(hero.color || '')) $('#cal-hero .hero').style.setProperty('--cal', hero.color);
+    $('#cal-more').innerHTML = hero ? events.slice(1, 3).map((e) => `
+      <li><span class="t">${esc(dayLabel(e.start))} ${hm(e.start)}</span><span class="grow" title="${esc(e.title)}">${esc(e.title || '(sem título)')}</span><button class="link" data-rec="${esc(e.id)}" type="button">gravar</button></li>`).join('') : '';
+    let line = '';
+    if (!hero) {
+      if (cal.access === 'notDetermined' || cal.access === 'unknown') {
+        line = 'Veja aqui suas próximas reuniões do Calendário do Mac. <button class="link" data-cal="connect" type="button">conectar calendário</button>';
+      } else if (cal.access && !granted && cal.access !== 'unavailable') {
+        line = 'Sem acesso ao calendário. <button class="link" data-cal="settings" type="button">abrir ajustes</button>';
+      } else if (first) {
+        line = `Próxima no calendário: <b>${esc(dayLabel(first.start).toLowerCase())} ${hm(first.start)} · ${esc(first.title || '(sem título)')}</b> <button class="link" data-rec="${esc(first.id)}" type="button">gravar</button>`;
+      }
     }
-    if (cal.access && cal.access !== 'granted') {
-      el.innerHTML = '<li class="s-empty">Sem acesso ao calendário. Ative "Entrevista" em Ajustes > Privacidade > Calendários.<button class="link" id="cal-settings" type="button">abrir ajustes</button></li>';
-      $('#cal-settings').addEventListener('click', () => api.invoke('permissions:request', { which: 'calendars' }));
-      return;
-    }
-    const list = cal.events.slice(0, 4);
-    if (!list.length) {
-      el.innerHTML = `<li class="s-empty">${cal.loading ? 'Lendo o calendário…' : 'Nenhuma reunião nas próximas 36 horas.'}</li>`;
-      return;
-    }
-    el.innerHTML = list.map((e) => {
-      const color = /^#[0-9a-f]{6}$/i.test(e.color || '') ? ` style="--cal:${e.color}"` : '';
-      const guests = e.guests || [];
-      const people = guests.slice(0, 4).map((g) => `<span class="pp">${esc(g)}</span>`).join('')
-        + (guests.length > 4 ? `<span class="pp">+${guests.length - 4}</span>` : '');
-      const join = e.link ? `<button class="btn primary small" data-join="${esc(e.id)}" type="button" title="${esc(e.link)}">Entrar e gravar</button>` : '';
-      return `<li class="meeting-card ${e.start <= Date.now() ? 'now' : ''}"${color}>
-        <div class="uc-body">
-          <div class="mc-top"><span class="mc-when">${esc(fmtEventWhen(e))} · ${esc(e.source)}</span><span class="mc-chips">${eventChip(e)}</span></div>
-          <div class="mc-title" title="${esc(e.title)}">${esc(e.title || '(sem título)')}</div>
-          ${people ? `<div class="mc-people">${people}</div>` : ''}
-        </div>
-        <div class="uc-actions">${join}<button class="btn ${e.link ? 'secondary' : 'primary'} small" data-rec="${esc(e.id)}" type="button">Só gravar</button></div>
-      </li>`;
-    }).join('');
-    el.querySelectorAll('[data-join]').forEach((b) => b.addEventListener('click', () => startFromEvent(b.dataset.join, true)));
-    el.querySelectorAll('[data-rec]').forEach((b) => b.addEventListener('click', () => startFromEvent(b.dataset.rec, false)));
+    $('#cal-line').innerHTML = line;
+    $('#cal-line').classList.toggle('hidden', !line);
+    renderAdhoc();
+  }
+
+  /** With a calendar meeting up front, the ad-hoc start steps back to a small button. */
+  function renderAdhoc() {
+    const hero = $('#panel-meeting').classList.contains('has-hero');
+    const btn = $('#btn-start-meeting');
+    if (!btn.disabled) btn.textContent = hero ? 'Começar reunião avulsa' : 'Começar reunião';
+    btn.classList.toggle('primary', !hero);
+    btn.classList.toggle('secondary', hero);
+    btn.classList.toggle('small', hero);
   }
 
   async function refreshCalendar(request) {
     const cal = state.calendar;
     if (cal.loading) return;
     cal.loading = true;
-    renderUpcoming();
     try {
       const r = await api.invoke('calendar:upcoming', { request: Boolean(request) });
       if (r) { cal.access = r.access; cal.events = r.events || []; cal.fetchedAt = r.fetchedAt || Date.now(); }
@@ -345,97 +471,173 @@
     await startMeeting(context, { title: e.title, start: e.start, end: e.end, source: e.source, link: e.link, guests });
   }
 
-  function renderSidePeople() {
-    const el = $('#side-people');
-    if (!state.people.length) {
-      el.innerHTML = '<li class="s-empty">Ninguém nomeado ainda. Dê nome aos participantes durante ou depois da reunião.</li>';
-      return;
-    }
-    el.innerHTML = state.people.slice(0, 10).map((p) => `<li data-name="${esc(p.name)}"><span class="pname">${esc(p.name)}</span><span class="muted">${p.meetings} ${p.meetings === 1 ? 'reunião' : 'reuniões'}</span></li>`).join('');
-    el.querySelectorAll('li[data-name]').forEach((li) => li.addEventListener('click', () => { setUiMode('library'); openPerson(li.dataset.name); }));
+  // ---------- home: interview (profile + this interview) ----------
+
+  function profileHeadline(text) {
+    const line = text.split('\n').map((l) => l.replace(/^[#*\s]+/, '').replace(/\*+$/, '').trim()).find(Boolean) || '';
+    return line.length > 70 ? `${line.slice(0, 69)}…` : line;
   }
 
-  // ---------- setup: interview ----------
-
-  function renderSessions() {
-    const el = $('#sessions');
-    if (!state.sessions.length) {
-      el.innerHTML = '<li class="s-empty">Nenhuma ainda. Cada Começar abre uma entrevista nova; Parar salva em sessions/.</li>';
-      return;
-    }
-    el.innerHTML = state.sessions.map((s) => `
-      <li data-id="${esc(s.id)}" title="Abrir sessão">
-        <div class="s-when"><span>${fmtWhen(s.startedAt)}</span><span>${fmtDuration(s.durationMs)} · ${s.answers} resp.</span></div>
-        <div class="s-title">${esc(s.title)}</div>
-      </li>`).join('');
-    el.querySelectorAll('li[data-id]').forEach((li) => li.addEventListener('click', () => viewSession(li.dataset.id)));
+  function initials(name) {
+    const words = name.split(/\s+/).filter((w) => /^\p{L}/u.test(w));
+    if (!words.length) return 'CV';
+    return (words[0][0] + (words.length > 1 ? words[words.length - 1][0] : '')).toUpperCase();
   }
 
-  function renderSetup() {
+  function renderProfile() {
+    const card = $('#profile-card');
+    const text = (state.profile || '').trim();
+    $('#profile-edit').classList.toggle('hidden', !text);
+    card.classList.toggle('empty', !text);
+    if (!text) {
+      card.innerHTML = '<span class="grow">Cole seu currículo uma vez. Ele fica salvo para todas as entrevistas.</span><button class="btn secondary small" type="button">Adicionar perfil</button>';
+      return;
+    }
+    const name = profileHeadline(text);
+    const words = text.split(/\s+/).filter(Boolean).length;
+    const saved = state.profileSavedAt ? ` · salvo em ${fmtShort(state.profileSavedAt)}` : '';
+    card.innerHTML = `<span class="avatar">${esc(initials(name))}</span><span class="grow"><span class="pc-name">${esc(name)}</span><span class="pc-sub">${words} palavras${saved}</span></span>`;
+  }
+
+  function renderKeysLine() {
     const cfg = state.config || {};
     const hk = cfg.hotkeys || {};
-    const items = [];
-    const dot = (ok) => `<span class="dot ${ok === true ? 'ok' : ok === 'pending' ? 'warn' : 'err'}"></span>`;
-    const interview = state.uiMode === 'interview';
+    $('#keys-line').innerHTML = [[hk.answer, 'resposta'], [hk.code, 'código pela tela'], [hk.toggleWindow, 'ocultar']]
+      .filter(([k]) => k)
+      .map(([k, label]) => `<span><kbd>${esc(accelLabel(k))}</kbd> ${label}</span>`).join('');
+    $('#setup-model').textContent = cfg.setup ? `${cfg.setup.model} · ${cfg.setup.effort}` : '';
+  }
 
-    items.push(`<li>${dot(state.claudeBinary ? true : false)}<span class="txt">Claude Code (<code>claude -p</code>)<span class="sub">${state.claudeBinary ? esc(state.claudeBinary) : 'binário não encontrado'}</span></span></li>`);
-    items.push(`<li>${dot(state.deepgramKey)}<span class="txt">Chave Deepgram<span class="sub">${state.deepgramKey ? 'carregada do .env' : 'DEEPGRAM_API_KEY ausente no .env'}</span></span></li>`);
-    items.push(`<li>${dot(state.native.available)}<span class="txt">Motor de áudio nativo<span class="sub">${state.native.available ? 'Core Audio tap + microfone, 16 kHz' : esc(state.native.error || 'indisponível')}</span></span></li>`);
-    const mic = state.permissions.microphone;
-    items.push(`<li>${dot(mic === 'granted' ? true : mic === 'not-determined' ? 'pending' : false)}<span class="txt">Microfone<span class="sub">${mic === 'granted' ? 'permitido' : mic === 'not-determined' ? 'pede ao iniciar' : 'negado: Ajustes > Privacidade > Microfone'}</span></span>${mic !== 'granted' ? '<button class="link" data-perm="microphone">pedir</button>' : ''}</li>`);
-    items.push(`<li>${dot('pending')}<span class="txt">Gravação de áudio do sistema<span class="sub">macOS pergunta na primeira captura (sem compartilhar tela)</span></span><button class="link" data-perm="audio">ajustes</button></li>`);
-    if (interview) {
-      const scr = state.permissions.screen;
-      items.push(`<li>${dot(scr === 'granted' ? true : scr === 'not-determined' ? 'pending' : false)}<span class="txt">Gravação de tela (para Código)<span class="sub">${scr === 'granted' ? 'permitida' : 'pede no primeiro screenshot'}</span></span>${scr !== 'granted' ? '<button class="link" data-perm="screen">ajustes</button>' : ''}</li>`);
-    } else if (cfg.meeting) {
-      const m = cfg.meeting;
-      items.push(`<li>${dot(true)}<span class="txt">Modo reunião<span class="sub">${m.diarize ? 'separa vozes do outro lado' : 'sem separação de vozes'} · ${m.saveAudio ? 'grava WAV por canal' : 'sem gravação de áudio'} · ${m.refine ? 'refina ao parar' : 'sem refino'} · ${m.autoSummary ? 'resumo automático' : 'resumo manual'}</span></span></li>`);
-    }
-    const hs = state.headset || {};
-    if (hs.outputName) {
-      items.push(`<li>${dot(hs.bluetooth ? 'pending' : true)}<span class="txt">Saída: ${esc(hs.outputName)}<span class="sub">${hs.bluetooth ? 'Bluetooth: o app usa o microfone do Mac e o define como padrão do sistema durante a sessão' : 'com fio ou alto-falante, sem restrições'}</span></span></li>`);
-    } else if (!hs.helper) {
-      items.push(`<li>${dot('pending')}<span class="txt">Helper de áudio<span class="sub">native/audio-defaults não compilado (rode npm install)</span></span></li>`);
-    }
-    $('#checklist').innerHTML = items.join('');
-    $('#checklist').querySelectorAll('[data-perm]').forEach((b) => {
-      b.addEventListener('click', async () => {
-        await api.invoke('permissions:request', { which: b.dataset.perm });
-        setTimeout(refreshState, 800);
-      });
-    });
+  function openProfile() {
+    $('#profile-text').value = state.profile || '';
+    $('#profile-modal').classList.remove('hidden');
+    $('#profile-text').focus();
+  }
 
-    $('#hotkeys').innerHTML = [
-      `<li><span>Resposta agora</span><kbd>${accelLabel(hk.answer)}</kbd></li>`,
-      `<li><span>Screenshot e solução</span><kbd>${accelLabel(hk.code)}</kbd></li>`,
-      `<li><span>Ocultar / mostrar</span><kbd>${accelLabel(hk.toggleWindow)}</kbd></li>`,
-      `<li><span>Idioma da resposta</span><kbd>${accelLabel(hk.language)}</kbd></li>`,
-      `<li><span>Fundo mais / menos opaco</span><kbd>${accelLabel(hk.opacityUp)} ${accelLabel(hk.opacityDown)}</kbd></li>`,
-    ].join('');
+  function closeProfile() {
+    const changed = $('#profile-text').value.trim() !== (state.profile || '').trim();
+    if (changed && !window.confirm('Descartar as alterações do perfil?')) return;
+    $('#profile-modal').classList.add('hidden');
+  }
 
-    const mc = (m) => m ? `<code>${esc(m.model)}</code> ${m.fastMode ? '↯ fast' : ''} esforço ${esc(m.effort)}` : '';
-    $('#models').innerHTML = [
-      `<li><span>Respostas</span><span>${mc(cfg.answer)}</span></li>`,
-      `<li><span>Código</span><span>${mc(cfg.code)}</span></li>`,
-      `<li><span>Preparação</span><span>${mc(cfg.setup)}</span></li>`,
-    ].join('');
-    $('#setup-model').textContent = cfg.setup ? `(${cfg.setup.model}, velocidade padrão)` : '';
+  async function saveProfileText() {
+    const r = await api.invoke('profile:save', { text: $('#profile-text').value });
+    if (!r || !r.ok) { showToast('error', (r && r.error) || 'Perfil não salvo.'); return; }
+    state.profile = r.profile || '';
+    state.profileSavedAt = r.savedAt || null;
+    renderProfile();
+    $('#profile-modal').classList.add('hidden');
+    showToast('info', 'Perfil salvo.');
+  }
 
-    const note = [];
-    if (!state.deepgramKey) note.push('sem transcrição (falta a chave)');
-    if (!state.claudeBinary) note.push('sem Claude (binário não encontrado)');
-    $('#start-note').textContent = note.length ? `Vai iniciar ${note.join(' e ')}.` : '';
+  function setPrepOpen(open) {
+    state.prepOpen = open;
+    showView();
   }
 
   function renderSetupChat() {
     const log = $('#chat-log');
     log.innerHTML = state.setupChat.map((m) => {
       if (m.role === 'user') return `<div class="msg user"><span class="who">Você</span><div class="body">${inline(m.text).replace(/\n/g, '<br>')}</div></div>`;
-      // Hide the <briefing> block from the chat; it lands in the textarea.
-      const visible = m.text.replace(/<briefing>[\s\S]*?(<\/briefing>|$)/i, m.status === 'done' ? '<em>(briefing copiado para a caixa acima)</em>' : '<em>(escrevendo o briefing…)</em>');
+      // Hide the <briefing> block from the chat; it lands in the job field.
+      const visible = m.text.replace(/<briefing>[\s\S]*?(<\/briefing>|$)/i, m.status === 'done' ? '<em>(briefing copiado para Esta entrevista)</em>' : '<em>(escrevendo o briefing…)</em>');
       return `<div class="msg assistant ${m.status === 'streaming' ? 'streaming' : ''}"><span class="who">Claude</span><div class="body">${renderMd(visible)}</div></div>`;
     }).join('');
     log.scrollTop = log.scrollHeight;
+  }
+
+  // ---------- settings ----------
+
+  const MODEL_CHOICES = ['sonnet', 'opus', 'haiku'];
+  const EFFORT_CHOICES = ['low', 'medium', 'high', 'xhigh', 'max'];
+  const MODEL_ROWS = [['answer', 'Respostas'], ['code', 'Código'], ['setup', 'Preparação'], ['meeting.summary', 'Resumo da reunião'], ['meeting.chat', 'Chat da reunião']];
+  const MEETING_FLAGS = [['diarize', 'Separar as vozes do outro lado'], ['saveAudio', 'Gravar o áudio'], ['refine', 'Refinar a transcrição ao parar'], ['autoSummary', 'Resumo automático ao parar']];
+  const HOTKEY_ROWS = [['answer', 'Resposta agora'], ['code', 'Screenshot e solução'], ['toggleWindow', 'Ocultar / mostrar'], ['language', 'Idioma da resposta'], ['opacityUp', 'Fundo mais opaco'], ['opacityDown', 'Fundo menos opaco']];
+
+  function cfgAt(keyPath) {
+    return keyPath.split('.').reduce((o, k) => (o ? o[k] : undefined), state.config);
+  }
+
+  /** "meeting.chat", { model } -> { meeting: { chat: { model } } } */
+  function patchAt(keyPath, value) {
+    return keyPath.split('.').reduceRight((inner, k) => ({ [k]: inner }), value);
+  }
+
+  function renderSettings() {
+    const c = state.config;
+    if (!c) return;
+    const options = (list, cur) => (list.includes(cur) ? list : [cur, ...list])
+      .map((v) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(v)}</option>`).join('');
+    const models = MODEL_ROWS.map(([key, label]) => {
+      const m = cfgAt(key) || {};
+      return `<div class="set-row"><span>${label}</span><span class="set-ctl">
+        <select data-model="${key}" aria-label="Modelo: ${label}">${options(MODEL_CHOICES, m.model)}</select>
+        <select data-effort="${key}" aria-label="Esforço: ${label}">${options(EFFORT_CHOICES, m.effort)}</select></span></div>`;
+    }).join('');
+    const flags = MEETING_FLAGS.map(([key, label]) => `
+      <label class="set-row"><span>${label}</span><input type="checkbox" class="switch" data-flag="${key}" ${c.meeting && c.meeting[key] ? 'checked' : ''} /></label>`).join('');
+    const keys = HOTKEY_ROWS.map(([key, label]) => `
+      <div class="set-row"><span>${label}</span><button type="button" class="keycap" data-hotkey="${key}" title="Clique e pressione o novo atalho">${esc(accelLabel(c.hotkeys[key]))}</button></div>`).join('');
+    $('#settings-body').innerHTML = `<h5>Modelos <span class="muted">modelo · esforço</span></h5>${models}<h5>Reunião</h5>${flags}<h5>Atalhos</h5>${keys}`;
+  }
+
+  async function saveSetting(patch) {
+    const r = await api.invoke('settings:save', patch);
+    if (!r || !r.ok) {
+      showToast('error', (r && r.error) || 'Ajuste não salvo.');
+      renderSettings();
+      return;
+    }
+    state.config = { ...state.config, ...r.config };
+    renderSettings();
+    renderKeysLine();
+    renderLiveChrome();
+    const el = $('#settings-saved');
+    el.textContent = 'salvo';
+    clearTimeout(el._t);
+    el._t = setTimeout(() => { el.textContent = ''; }, 1600);
+  }
+
+  // Shortcut recorder: our global shortcuts are off while it listens.
+  let recording = null;
+
+  function startRecording(button) {
+    stopRecording(false);
+    recording = { key: button.dataset.hotkey, button };
+    button.classList.add('recording');
+    button.textContent = 'pressione o atalho…';
+    api.invoke('hotkeys:suspend', { suspend: true });
+  }
+
+  function stopRecording(saving) {
+    if (!recording) return;
+    recording = null;
+    // Saving re-registers every shortcut in main (the new set, or the old one if it fails).
+    if (!saving) { api.invoke('hotkeys:suspend', { suspend: false }); renderSettings(); }
+  }
+
+  const KEY_NAMES = {
+    Space: 'Space', Enter: 'Return', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete',
+    ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+    Minus: '-', Equal: '=', Comma: ',', Period: '.', Slash: '/', Semicolon: ';', Quote: "'",
+    BracketLeft: '[', BracketRight: ']', Backslash: '\\', Backquote: '`',
+  };
+
+  /** Electron accelerator for a key press, or null until a real key comes with a modifier. */
+  function accelFromEvent(e) {
+    const code = e.code || '';
+    const key = /^Key[A-Z]$/.test(code) ? code.slice(3)
+      : /^Digit\d$/.test(code) ? code.slice(5)
+        : /^F\d{1,2}$/.test(code) ? code
+          : KEY_NAMES[code] || null;
+    if (!key) return null;
+    const mods = [];
+    if (e.metaKey) mods.push('CommandOrControl');
+    if (e.ctrlKey) mods.push('Control');
+    if (e.altKey) mods.push('Alt');
+    if (e.shiftKey) mods.push('Shift');
+    if (!mods.length) return null;
+    return [...mods, key].join('+');
   }
 
   // ---------- library ----------
@@ -449,34 +651,34 @@
     sel.innerHTML = '<option value="">Todas as pessoas</option>' + state.people.map((p) => `<option value="${esc(p.name)}" ${p.name === current ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
     $('#lib-q').value = state.lib.q;
     await runSearch();
-    renderLibrary();
   }
 
   async function runSearch() {
     try {
       state.lib.results = (await api.invoke('sessions:search', { q: state.lib.q, person: state.lib.person })) || [];
     } catch { state.lib.results = []; }
-    state.lib.results = state.lib.results.filter((s) => s.kind === 'meeting' || state.lib.q || state.lib.person);
     renderLibrary();
   }
 
   function setLibTab(tab) {
     state.lib.tab = tab;
     $$('.lib-tabs .tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
-    $('#lib-meetings').classList.toggle('hidden', tab !== 'meetings');
+    $('#lib-meetings').classList.toggle('hidden', tab === 'people');
     $('#lib-people').classList.toggle('hidden', tab !== 'people');
   }
 
   function renderLibrary() {
-    setLibTab(state.lib.tab);
-    const list = $('#lib-meetings');
+    const tab = state.lib.tab;
+    setLibTab(tab);
+    const list = tab === 'meeting' || tab === 'interview' ? state.lib.results.filter((s) => s.kind === tab) : state.lib.results;
     const q = state.lib.q || state.lib.person;
-    if (!state.lib.results.length) {
-      list.innerHTML = `<p class="lib-empty">${q ? 'Nada encontrado.' : 'Nenhuma reunião gravada ainda.'}</p>`;
-    } else {
-      list.innerHTML = `<ul class="meetings">${state.lib.results.map((s) => meetingCardHtml(s, true)).join('')}</ul>`;
-      list.querySelectorAll('li[data-id]').forEach((li) => li.addEventListener('click', () => viewSession(li.dataset.id)));
-    }
+    const empty = q ? 'Nada encontrado.'
+      : tab === 'meeting' ? 'Nenhuma reunião gravada ainda.'
+        : tab === 'interview' ? 'Nenhuma entrevista gravada ainda.'
+          : 'Nada gravado ainda.';
+    $('#lib-meetings').innerHTML = list.length
+      ? `<ul class="rows">${list.map((s) => sessionRowHtml(s, { matches: true })).join('')}</ul>`
+      : `<p class="lib-empty">${empty}</p>`;
     const people = $('#lib-people');
     if (state.lib.detail) {
       const d = state.lib.detail;
@@ -486,18 +688,16 @@
           <h3>${esc(d.name)}</h3>
           <p class="muted">${d.meetings} ${d.meetings === 1 ? 'reunião' : 'reuniões'} · ${d.utterances} falas</p>
         </div>
-        <ul class="meetings">${d.results.map((s) => meetingCardHtml(s, true)).join('')}</ul>`;
+        <ul class="rows">${d.results.map((s) => sessionRowHtml(s, { matches: true })).join('')}</ul>`;
       people.querySelector('#person-back').addEventListener('click', () => { state.lib.detail = null; renderLibrary(); });
-      people.querySelectorAll('li[data-id]').forEach((li) => li.addEventListener('click', () => viewSession(li.dataset.id)));
     } else if (!state.people.length) {
       people.innerHTML = '<p class="lib-empty">Ninguém nomeado ainda. Clique em um participante na transcrição para dar nome.</p>';
     } else {
-      people.innerHTML = `<ul class="people">${state.people.map((p) => `
-        <li data-name="${esc(p.name)}">
-          <span class="pname">${esc(p.name)}</span>
-          <span class="muted">${p.meetings} ${p.meetings === 1 ? 'reunião' : 'reuniões'} · ${p.utterances} falas · última ${fmtDate(p.lastAt)}</span>
+      people.innerHTML = `<ul class="rows">${state.people.map((p) => `
+        <li class="srow" data-name="${esc(p.name)}">
+          <div class="srow-main"><div class="srow-title">${esc(p.name)}</div><div class="srow-sub">${p.meetings} ${p.meetings === 1 ? 'reunião' : 'reuniões'} · ${p.utterances} falas</div></div>
+          <div class="srow-meta"><span>última ${esc(fmtDay(p.lastAt))}</span></div>
         </li>`).join('')}</ul>`;
-      people.querySelectorAll('li[data-name]').forEach((li) => li.addEventListener('click', () => openPerson(li.dataset.name)));
     }
   }
 
@@ -744,7 +944,9 @@
     if (streaming) {
       block.classList.remove('hidden');
       $('#summary-meta').textContent = 'escrevendo…';
-      $('#summary').innerHTML = `<div class="streaming">${renderMd(streaming.text) || '<p class="muted">Pensando…</p>'}</div>`;
+      // The title line is stored apart once the summary is done; keep it out while it streams too.
+      const body = streaming.text.replace(/^\s*#(?!#)[^\n]*\n?/, '');
+      $('#summary').innerHTML = `<div class="streaming">${renderMd(body) || '<p class="muted">Pensando…</p>'}</div>`;
       return;
     }
     if (s.summary) {
@@ -818,6 +1020,11 @@
       state.participants = {};
       state.viewing = null;
       state.sessionId = d.sessionId || null;
+      // Main starts a fresh preparation chat after every session.
+      state.setupChat = [];
+      state.chatStarted = false;
+      state.prepOpen = false;
+      renderSetupChat();
       renderLiveChrome();
     }
     showView();
@@ -828,6 +1035,11 @@
     renderSummary();
     if (d.phase === 'setup') {
       state.sessionId = null;
+      // A saved interview used its notes: the next one starts with an empty field.
+      if (wasLive && d.mode === 'interview' && d.sessionId) {
+        $('#job').value = '';
+        localStorage.removeItem('interviewJob');
+      }
       refreshState().then(() => {
         // A finished meeting opens straight away so the refine and summary can be watched.
         if (wasLive && d.mode === 'meeting' && d.sessionId) viewSession(d.sessionId);
@@ -997,11 +1209,12 @@
   });
 
   api.on('setup:briefing', (d) => {
-    const ta = $('#briefing');
+    const ta = $('#job');
     ta.value = d.briefing;
+    localStorage.setItem('interviewJob', ta.value);
     ta.classList.add('flash');
     setTimeout(() => ta.classList.remove('flash'), 1500);
-    showToast('info', 'Briefing pronto. Revise e clique em Começar sessão.');
+    showToast('info', 'Briefing pronto em Esta entrevista. Revise e clique em Começar entrevista.');
   });
 
   api.on('toast', (d) => showToast(d.level, d.message));
@@ -1024,12 +1237,8 @@
   async function refreshLists() {
     let all = [];
     try { all = (await api.invoke('sessions:list')) || []; } catch { all = []; }
-    state.sessions = all.filter((s) => s.kind !== 'meeting');
     state.meetings = all.filter((s) => s.kind === 'meeting');
-    try { state.people = (await api.invoke('sessions:people')) || []; } catch { state.people = []; }
-    renderSessions();
     renderRecentMeetings();
-    renderSidePeople();
   }
 
   async function refreshState() {
@@ -1046,18 +1255,23 @@
     state.headset = s.headset;
     state.status = s.status;
     state.jobs = s.jobs || {};
+    state.profile = s.profile || '';
+    state.profileSavedAt = s.profileSavedAt || null;
+    state.systemAudioOkAt = s.systemAudioOkAt || null;
+    state.loaded = true;
     applyAlpha(s.alpha);
     state.segments = s.segments || [];
     state.names = s.names || {};
     state.participants = s.participants || {};
     state.chat = s.chat || [];
-    if (!$('#briefing').value && s.briefing) $('#briefing').value = s.briefing;
     const sel = $('#meeting-lang');
     const wanted = localStorage.getItem('meetingLang') || (s.config && s.config.meeting && s.config.meeting.language) || 'pt-BR';
     if ([...sel.options].some((o) => o.value === wanted)) sel.value = wanted;
     await refreshLists();
     showView();
-    renderSetup();
+    renderReadiness();
+    renderProfile();
+    renderKeysLine();
     renderLiveChrome();
     renderStatus();
     renderParticipants();
@@ -1065,13 +1279,14 @@
     renderAnswers();
     renderMeetingChat();
     renderSummary();
-    console.log(`[ui] state loaded: phase=${state.phase} mode=${state.mode} deepgram=${state.deepgramKey} claude=${Boolean(state.claudeBinary)} native=${state.native.available} checklist=${$('#checklist').children.length}`);
+    console.log(`[ui] state loaded: phase=${state.phase} mode=${state.mode} deepgram=${state.deepgramKey} claude=${Boolean(state.claudeBinary)} native=${state.native.available} checks=${$('#checklist').children.length}`);
   }
 
-  async function sendSetupChat(text) {
+  /** `display` is what the chat log shows when the message itself is long (profile + notes). */
+  async function sendSetupChat(text, display) {
     const t = (text || '').trim();
     if (!t) return;
-    state.setupChat.push({ id: `u-${Date.now()}`, role: 'user', text: t });
+    state.setupChat.push({ id: `u-${Date.now()}`, role: 'user', text: display || t });
     renderSetupChat();
     $('#chat-send').disabled = true;
     const r = await api.invoke('setup:chat', { text: t });
@@ -1094,10 +1309,69 @@
     }
   }
 
-  // mode tabs
-  $$('.mode-tabs .tab').forEach((b) => b.addEventListener('click', () => { setUiMode(b.dataset.mode); renderSetup(); }));
+  async function requestPermission(which) {
+    await api.invoke('permissions:request', { which });
+    setTimeout(refreshState, 800);
+  }
+
+  // top bar: tabs, readiness pill, settings
+  $$('.mode-tabs .tab').forEach((b) => b.addEventListener('click', () => setUiMode(b.dataset.mode)));
+  $('#status-pill').addEventListener('click', (e) => {
+    e.stopPropagation();
+    $('#status-pop').classList.toggle('hidden');
+  });
+  document.addEventListener('click', (e) => {
+    const perm = e.target.closest('[data-perm]');
+    if (perm) { requestPermission(perm.dataset.perm); return; }
+    if (!e.target.closest('#status-pop')) $('#status-pop').classList.add('hidden');
+  });
+  $('#btn-settings').addEventListener('click', () => {
+    renderSettings();
+    $('#settings-modal').classList.remove('hidden');
+  });
+  $('#settings-close').addEventListener('click', () => { stopRecording(false); $('#settings-modal').classList.add('hidden'); });
+  $('#settings-modal').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) { stopRecording(false); e.currentTarget.classList.add('hidden'); }
+  });
+  $('#settings-body').addEventListener('change', (e) => {
+    const t = e.target;
+    if (t.dataset.model) saveSetting(patchAt(t.dataset.model, { model: t.value }));
+    else if (t.dataset.effort) saveSetting(patchAt(t.dataset.effort, { effort: t.value }));
+    else if (t.dataset.flag) saveSetting({ meeting: { [t.dataset.flag]: t.checked } });
+  });
+  $('#settings-body').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-hotkey]');
+    if (b) startRecording(b);
+  });
+  window.addEventListener('keydown', (e) => {
+    if (recording) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === 'Escape') { stopRecording(false); return; }
+      const accel = accelFromEvent(e);
+      if (!accel) return;
+      const key = recording.key;
+      stopRecording(true);
+      saveSetting({ hotkeys: { [key]: accel } });
+      return;
+    }
+    if (e.key !== 'Escape') return;
+    if (!$('#settings-modal').classList.contains('hidden')) $('#settings-modal').classList.add('hidden');
+    else if (!$('#profile-modal').classList.contains('hidden')) closeProfile();
+    else if (!$('#status-pop').classList.contains('hidden')) $('#status-pop').classList.add('hidden');
+    else if (state.prepOpen) setPrepOpen(false);
+  }, true);
+
+  // session rows (recent meetings, library) open the viewer
+  ['#recent-meetings', '#lib-meetings', '#lib-people'].forEach((sel) => $(sel).addEventListener('click', (e) => {
+    const row = e.target.closest('li[data-id]');
+    if (row) { viewSession(row.dataset.id); return; }
+    const person = e.target.closest('li[data-name]');
+    if (person) openPerson(person.dataset.name);
+  }));
+
+  // library
   $('#btn-library').addEventListener('click', () => setUiMode('library'));
-  $('#lib-back').addEventListener('click', () => setUiMode('meeting'));
   $$('.lib-tabs .tab').forEach((b) => b.addEventListener('click', () => { state.lib.detail = null; setLibTab(b.dataset.tab); renderLibrary(); }));
   $('#lib-q').addEventListener('input', (e) => {
     state.lib.q = e.target.value;
@@ -1114,31 +1388,56 @@
       const r = await api.invoke('session:start', { mode: 'meeting', briefing, language: $('#meeting-lang').value, event });
       if (r && r.warnings && r.warnings.length) showToast('warn', r.warnings.join(' · '), 8000);
       $('#context').value = '';
+      $('#adhoc').classList.remove('ctx-open');
     } finally {
-      btn.disabled = false; btn.textContent = 'Começar reunião';
+      btn.disabled = false;
+      renderAdhoc();
     }
   }
   $('#btn-start-meeting').addEventListener('click', () => startMeeting($('#context').value));
-  $('#cal-refresh').addEventListener('click', () => refreshCalendar(false));
-  // Keep the list current while the setup screen is up: every 5 min and when the window comes back.
+  $('#context').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); startMeeting($('#context').value); } });
+  $('#ctx-toggle').addEventListener('click', () => { $('#adhoc').classList.add('ctx-open'); $('#context').focus(); });
+  $('#panel-meeting').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-join],[data-rec],[data-cal]');
+    if (!t) return;
+    if (t.dataset.join) startFromEvent(t.dataset.join, true);
+    else if (t.dataset.rec) startFromEvent(t.dataset.rec, false);
+    else if (t.dataset.cal === 'connect') refreshCalendar(true);
+    else if (t.dataset.cal === 'settings') api.invoke('permissions:request', { which: 'calendars' });
+  });
+  // Keep the calendar current while the home screen is up: every 5 min and when the window comes back.
   setInterval(() => { if (state.phase === 'setup') refreshCalendar(false); }, 5 * 60 * 1000);
+  // "Em 12 min" counts down, and the next meeting takes over the page when it gets close.
+  setInterval(() => { if (state.phase === 'setup' && !state.viewing) renderUpcoming(); }, 30 * 1000);
   window.addEventListener('focus', () => {
     if (state.phase === 'setup' && Date.now() - state.calendar.fetchedAt > 60 * 1000) refreshCalendar(false);
   });
 
   // interview setup
+  $('#job').value = localStorage.getItem('interviewJob') || '';
+  $('#job').addEventListener('input', (e) => localStorage.setItem('interviewJob', e.target.value));
+  $('#profile-edit').addEventListener('click', openProfile);
+  $('#profile-card').addEventListener('click', openProfile);
+  $('#profile-cancel').addEventListener('click', closeProfile);
+  $('#profile-save').addEventListener('click', saveProfileText);
+  $('#profile-modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeProfile(); });
+  $('#profile-text').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.metaKey) { e.preventDefault(); saveProfileText(); } });
+
   $('#btn-refine').addEventListener('click', async () => {
-    $('#setup-chat').classList.remove('hidden');
-    const ctx = $('#briefing').value.trim();
-    if (!state.chatStarted) {
-      state.chatStarted = true;
-      await sendSetupChat(ctx
-        ? `Here is my raw context. Ask what you need, then produce the briefing.\n\n${ctx}`
-        : 'I have no written context yet. Ask me the questions you need to build my briefing.');
-    } else {
-      $('#chat-input').focus();
-    }
+    setPrepOpen(true);
+    if (state.chatStarted) { $('#chat-input').focus(); return; }
+    state.chatStarted = true;
+    const profile = (state.profile || '').trim();
+    const job = $('#job').value.trim();
+    const sent = [profile ? 'perfil' : '', job ? 'notas desta entrevista' : ''].filter(Boolean).join(' e ');
+    await sendSetupChat([
+      'Help me prepare for this interview. Ask what you need, then produce the briefing.',
+      `PROFILE:\n${profile || '(empty: I have not saved a profile yet)'}`,
+      `NOTES ABOUT THIS INTERVIEW:\n${job || '(none yet)'}`,
+    ].join('\n\n'), sent ? `(${sent} enviados)` : 'Ainda não tenho perfil nem notas. Me pergunte o que precisa.');
+    $('#chat-input').focus();
   });
+  $('#prep-close').addEventListener('click', () => setPrepOpen(false));
   $('#chat-send').addEventListener('click', () => { const i = $('#chat-input'); sendSetupChat(i.value); i.value = ''; });
   $('#chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); const i = $('#chat-input'); sendSetupChat(i.value); i.value = ''; } });
   $('#chat-reset').addEventListener('click', async () => {
@@ -1150,10 +1449,10 @@
     const btn = $('#btn-start');
     btn.disabled = true; btn.textContent = 'Iniciando…';
     try {
-      const r = await api.invoke('session:start', { mode: 'interview', briefing: $('#briefing').value });
+      const r = await api.invoke('session:start', { mode: 'interview', job: $('#job').value });
       if (r && r.warnings && r.warnings.length) showToast('warn', r.warnings.join(' · '), 8000);
     } finally {
-      btn.disabled = false; btn.textContent = 'Começar sessão';
+      btn.disabled = false; btn.textContent = 'Começar entrevista';
     }
   });
 
@@ -1196,5 +1495,6 @@
   $('#meeting-lang').addEventListener('change', (e) => localStorage.setItem('meetingLang', e.target.value));
 
   setUiMode(state.uiMode === 'library' ? 'meeting' : state.uiMode);
+  renderUpcoming();
   refreshState().then(() => refreshCalendar(false));
 })();

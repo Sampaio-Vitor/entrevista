@@ -25,6 +25,9 @@ const INVOKE_CHANNELS = new Set([
   'permissions:request',
   'open:external',
   'calendar:upcoming',
+  'profile:save',
+  'settings:save',
+  'hotkeys:suspend',
 ]);
 
 const EVENT_CHANNELS = new Set([

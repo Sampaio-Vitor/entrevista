@@ -10,131 +10,138 @@
 <body class="mode-meeting">
   <div id="toast" class="toast hidden" role="status"></div>
 
+  <!-- ===== HOME: shared bar for setup and library ===== -->
+  <header id="topbar" class="topbar drag">
+    <span></span>
+    <nav class="mode-tabs no-drag" aria-label="Modo">
+      <button class="tab" data-mode="meeting" type="button">Reunião</button>
+      <button class="tab" data-mode="interview" type="button">Entrevista</button>
+      <button class="tab" data-mode="library" type="button">Biblioteca</button>
+    </nav>
+    <div class="topbar-right no-drag">
+      <button id="status-pill" class="pill" type="button" aria-haspopup="true"><span class="dot ok"></span><span id="status-text">Pronto</span></button>
+      <button id="btn-settings" class="icon-btn" type="button" title="Ajustes" aria-label="Ajustes">⚙</button>
+    </div>
+  </header>
+
+  <div id="status-pop" class="popover hidden" role="dialog" aria-label="Diagnóstico">
+    <h4 id="status-pop-title">Pronto para gravar</h4>
+    <ul id="checklist" class="checklist"></ul>
+  </div>
+
   <!-- ===== SETUP ===== -->
   <section id="view-setup" class="view">
-    <header class="setup-head drag">
-      <div class="brand">
-        <h1 id="brand-title">Reuniões</h1>
-        <p id="brand-sub">Grava os dois lados sem bot, separa quem falou e guarda tudo no seu Mac.</p>
-      </div>
-      <nav class="mode-tabs no-drag" aria-label="Modo">
-        <button class="tab" data-mode="meeting" type="button">Reunião</button>
-        <button class="tab" data-mode="interview" type="button">Entrevista</button>
-        <button class="tab" data-mode="library" type="button">Biblioteca</button>
-      </nav>
-    </header>
+    <div class="home">
+      <div id="issues" class="issues hidden"></div>
 
-    <div class="setup-grid">
-      <div class="setup-main">
-        <!-- meeting -->
-        <div id="panel-meeting" class="panel">
-          <div id="upcoming-block" class="hidden">
-            <div class="recent-head upcoming-head">
-              <h3>Próximas reuniões</h3>
-              <button id="cal-refresh" class="link" type="button">atualizar</button>
-            </div>
-            <ul id="upcoming" class="meetings upcoming"></ul>
-          </div>
+      <!-- meeting -->
+      <div id="panel-meeting" class="panel">
+        <div id="cal-hero"></div>
+        <ul id="cal-more" class="cal-more"></ul>
+        <p id="cal-line" class="cal-line hidden"></p>
 
-          <label for="context" class="field-label">Contexto da reunião <span class="muted">(opcional)</span></label>
-          <p class="hint">Uma linha basta: com quem, sobre o quê, o que você quer tirar dela. Vai para o resumo e para o chat.</p>
-          <textarea id="context" class="context" spellcheck="false" placeholder="Ex.: 1:1 com a Ana sobre o roadmap do Q1. Quero sair com as prioridades fechadas."></textarea>
-          <div class="row">
+        <div id="adhoc" class="adhoc">
+          <label class="ctx" for="context">
+            <span class="ctx-label">Sobre o quê? <span class="muted">(opcional)</span></span>
+            <input id="context" type="text" spellcheck="false" autocomplete="off" placeholder="Ex.: 1:1 com a Ana sobre o roadmap do Q1" />
+          </label>
+          <div class="adhoc-row">
             <button id="btn-start-meeting" class="btn primary" type="button">Começar reunião</button>
-            <label class="lang-pick" title="Idioma fixo transcreve melhor e separa as vozes. Auto detecta por palavra, mas junta as vozes.">
-              <span class="muted">Idioma</span>
-              <select id="meeting-lang">
-                <option value="pt-BR">Português</option>
-                <option value="en">English</option>
-                <option value="es">Español</option>
-                <option value="multi">Auto (pt/en)</option>
-              </select>
-            </label>
-            <span id="meeting-note" class="muted"></span>
-          </div>
-          <p class="hint">Ao vivo a separação de vozes é aproximada. Ao parar, o áudio gravado é transcrito de novo com separação precisa e o resumo é gerado.</p>
-
-          <div class="recent-head">
-            <h3>Reuniões recentes</h3>
-            <button id="btn-library" class="link" type="button">ver todas e buscar</button>
-          </div>
-          <ul id="recent-meetings" class="meetings"></ul>
-        </div>
-
-        <!-- interview -->
-        <div id="panel-interview" class="panel hidden">
-          <label for="briefing" class="field-label">Contexto inicial</label>
-          <p class="hint">Cole seu currículo, a vaga, a empresa e as histórias que quer usar. Português ou inglês. O Claude recebe isso como briefing durante a entrevista.</p>
-          <textarea id="briefing" spellcheck="false" placeholder="Ex.: Senior backend engineer, 7 anos, Go e Python. Vaga: Staff Engineer na Acme (série B, pagamentos). Histórias: migração que cortou latência de 900 ms para 310 ms; incidente de produção com rollback em 6 min; liderei squad de 5…"></textarea>
-
-          <div class="row">
-            <button id="btn-refine" class="btn secondary" type="button">Refinar com Claude</button>
-            <button id="btn-start" class="btn primary" type="button">Começar sessão</button>
-            <span id="start-note" class="muted"></span>
-          </div>
-
-          <div id="setup-chat" class="chat hidden">
-            <div class="chat-head">
-              <span>Diálogo de preparação <span class="muted" id="setup-model"></span></span>
-              <button id="chat-reset" class="link" type="button">reiniciar</button>
-            </div>
-            <div id="chat-log" class="chat-log"></div>
-            <div class="row">
-              <input id="chat-input" type="text" placeholder="Responda ao Claude e pressione Enter…" autocomplete="off" />
-              <button id="chat-send" class="btn secondary" type="button">Enviar</button>
-            </div>
-            <p class="hint">Quando o briefing final aparecer, ele é copiado para a caixa acima. Edite à vontade e comece.</p>
+            <button id="ctx-toggle" class="link" type="button">+ contexto</button>
+            <span class="grow"></span>
+            <select id="meeting-lang" class="mini-select" aria-label="Idioma da reunião" title="Idioma fixo transcreve melhor e separa as vozes. Auto detecta por palavra, mas junta as vozes.">
+              <option value="pt-BR">Português</option>
+              <option value="en">English</option>
+              <option value="es">Español</option>
+              <option value="multi">Auto (pt/en)</option>
+            </select>
           </div>
         </div>
+
+        <div class="sec-head">
+          <h3>Recentes</h3>
+          <button id="btn-library" class="link" type="button">Biblioteca →</button>
+        </div>
+        <ul id="recent-meetings" class="rows"></ul>
       </div>
 
-      <aside class="setup-side">
-        <h3>Checklist</h3>
-        <ul id="checklist" class="checklist"></ul>
-
-        <div class="interview-only">
-          <h3>Atalhos</h3>
-          <ul id="hotkeys" class="hotkeys"></ul>
-
-          <h3>Modelos</h3>
-          <ul id="models" class="models"></ul>
-
-          <h3>Entrevistas anteriores</h3>
-          <ul id="sessions" class="sessions"></ul>
+      <!-- interview -->
+      <div id="panel-interview" class="panel hidden">
+        <div class="sec-head first">
+          <h3>Seu perfil</h3>
+          <button id="profile-edit" class="link" type="button">editar</button>
         </div>
+        <div id="profile-card" class="profile-card"></div>
 
-        <div class="meeting-only">
-          <h3>Pessoas</h3>
-          <ul id="side-people" class="people-side"></ul>
+        <div class="sec-head"><h3><label for="job">Esta entrevista</label></h3></div>
+        <textarea id="job" class="job" spellcheck="false" placeholder="Empresa, vaga, com quem você fala e o que quer puxar. Ex.: Staff ML Engineer na Acme (pagamentos, série B). Técnica de 45 min com o Head of ML."></textarea>
 
-          <h3>Como funciona</h3>
-          <ul class="how">
-            <li>Seu microfone é um canal; o áudio do sistema é outro. Quem está do outro lado é separado por voz.</li>
-            <li>Clique em um participante para dar nome. O nome vale para a transcrição, o resumo e a busca.</li>
-            <li>Ao parar, o áudio gravado passa por uma segunda transcrição mais precisa e o resumo é gerado.</li>
-          </ul>
+        <div class="row">
+          <button id="btn-start" class="btn primary" type="button">Começar entrevista</button>
+          <button id="btn-refine" class="btn secondary" type="button">Preparar com Claude</button>
         </div>
-      </aside>
+        <div id="keys-line" class="keys-line"></div>
+      </div>
     </div>
   </section>
 
+  <!-- interview: preparation chat -->
+  <aside id="prep" class="drawer hidden" aria-label="Preparar com Claude">
+    <div class="drawer-head">
+      <strong>Preparar com Claude</strong>
+      <span class="muted small" id="setup-model"></span>
+      <span class="grow"></span>
+      <button id="chat-reset" class="link" type="button">reiniciar</button>
+      <button id="prep-close" class="icon-btn" type="button" aria-label="Fechar">✕</button>
+    </div>
+    <div id="chat-log" class="chat-log"></div>
+    <div class="row">
+      <input id="chat-input" type="text" placeholder="Responda ao Claude e pressione Enter…" autocomplete="off" />
+      <button id="chat-send" class="btn secondary" type="button">Enviar</button>
+    </div>
+    <p class="hint">O briefing final vai para o campo Esta entrevista.</p>
+  </aside>
+
+  <!-- interview: profile editor -->
+  <div id="profile-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="profile-title">
+    <div class="sheet wide">
+      <div class="sheet-head">
+        <strong id="profile-title">Seu perfil</strong>
+        <span class="muted small">Currículo, experiências e histórias. Vale para todas as entrevistas.</span>
+      </div>
+      <textarea id="profile-text" spellcheck="false" placeholder="Cole aqui seu currículo e as histórias que você quer usar."></textarea>
+      <div class="row end">
+        <button id="profile-cancel" class="btn secondary" type="button">Cancelar</button>
+        <button id="profile-save" class="btn primary" type="button">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- settings -->
+  <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="sheet">
+      <div class="sheet-head row-head">
+        <strong id="settings-title">Ajustes</strong>
+        <span id="settings-saved" class="muted small"></span>
+        <span class="grow"></span>
+        <button id="settings-close" class="icon-btn" type="button" aria-label="Fechar">✕</button>
+      </div>
+      <div id="settings-body" class="settings"></div>
+      <p class="hint">Salvo em config.json. Modelos valem a partir da próxima sessão.</p>
+    </div>
+  </div>
+
   <!-- ===== LIBRARY ===== -->
   <section id="view-library" class="view hidden">
-    <header class="bar drag">
-      <div class="bar-left">
-        <span class="view-title">Biblioteca</span>
-      </div>
-      <div class="bar-right no-drag">
-        <button id="lib-back" class="btn secondary small" type="button">Voltar</button>
-      </div>
-    </header>
     <div class="lib-tools">
       <input id="lib-q" type="search" placeholder="Buscar no que foi dito, no resumo ou no contexto…" autocomplete="off" />
       <select id="lib-person" aria-label="Pessoa">
         <option value="">Todas as pessoas</option>
       </select>
       <nav class="lib-tabs">
-        <button class="tab active" data-tab="meetings" type="button">Reuniões</button>
+        <button class="tab active" data-tab="all" type="button">Tudo</button>
+        <button class="tab" data-tab="meeting" type="button">Reuniões</button>
+        <button class="tab" data-tab="interview" type="button">Entrevistas</button>
         <button class="tab" data-tab="people" type="button">Pessoas</button>
       </nav>
     </div>

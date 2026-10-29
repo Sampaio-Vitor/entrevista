@@ -41,6 +41,8 @@ export interface Summary {
   text: string;
   at: number;
   model: string | null;
+  /** Short title Claude gives the meeting on the first line of the minutes. */
+  title?: string;
 }
 
 export type RefineState = 'none' | 'pending' | 'done' | 'error';
@@ -66,6 +68,8 @@ export interface StoredSession {
   liveSegments?: Segment[];
   /** Calendar event the meeting was started from. */
   event?: SessionEvent;
+  /** Interview: my notes about this interview (company, role, focus), without the profile. */
+  job?: string;
 }
 
 export interface SessionEvent {
@@ -86,7 +90,10 @@ export interface SessionSummary {
   answers: number;
   segments: number;
   title: string;
+  /** Voices someone named (unnamed "Participante N" left out). */
   participants: string[];
+  /** Calendar guests, for meetings started from an event. */
+  guests: string[];
   hasSummary: boolean;
   refined: RefineState;
 }
@@ -127,14 +134,15 @@ export class SessionStore {
     return this.current;
   }
 
-  begin(kind: SessionKind, briefing: string, language: string, event?: SessionEvent): StoredSession {
+  begin(kind: SessionKind, briefing: string, language: string, extra: { event?: SessionEvent; job?: string } = {}): StoredSession {
     if (this.current) this.end();
     const startedAt = Date.now();
     const id = new Date(startedAt).toISOString().replace(/[:.]/g, '-').slice(0, 19);
     this.current = {
       id, kind, startedAt, endedAt: null, briefing, language,
       segments: [], answers: [], participants: {}, summary: null, chat: [], audio: [], refined: 'none',
-      ...(event ? { event } : {}),
+      ...(extra.event ? { event: extra.event } : {}),
+      ...(extra.job?.trim() ? { job: extra.job.trim() } : {}),
     };
     this.write(this.current);
     return this.current;
@@ -175,7 +183,9 @@ export class SessionStore {
     const after = this.names(s);
     if (s.summary) {
       for (const id of Object.keys(after)) {
-        if (before[id] && before[id] !== after[id]) s.summary.text = s.summary.text.split(before[id]).join(after[id]);
+        if (!before[id] || before[id] === after[id]) continue;
+        s.summary.text = s.summary.text.split(before[id]).join(after[id]);
+        if (s.summary.title) s.summary.title = s.summary.title.split(before[id]).join(after[id]);
       }
     }
     this.persist(s);
@@ -279,7 +289,8 @@ export class SessionStore {
           if (matches.length >= MAX_MATCHES) break;
         }
         const inSummary = q && s.summary?.text.toLowerCase().includes(q);
-        const inContext = q && s.briefing.toLowerCase().includes(q);
+        // Interviews: only the notes about that interview, not the profile every one of them carries.
+        const inContext = q && (s.kind === 'interview' ? s.job ?? '' : s.briefing).toLowerCase().includes(q);
         if (!matches.length && !inSummary && !inContext) continue;
       }
       out.push({ ...this.summarize(s), matches });
@@ -361,10 +372,11 @@ export class SessionStore {
     const names = this.names(s);
     const firstThem = s.segments.find((seg) => seg.channel === 'them' && seg.text.trim());
     const first = firstThem ?? s.segments.find((seg) => seg.text.trim());
-    const fromSpeech = first ? first.text.trim().slice(0, 90) + (first.text.length > 90 ? '…' : '') : '(sem fala registrada)';
-    const title = s.kind === 'meeting' && s.briefing.trim()
-      ? s.briefing.trim().split('\n')[0].slice(0, 90)
-      : fromSpeech;
+    const fromSpeech = first ? clip(first.text, 90) : '(sem fala registrada)';
+    // Meetings: calendar event, then Claude's title, then the context I typed.
+    const title = (s.kind === 'meeting'
+      ? s.event?.title.trim() || s.summary?.title?.trim() || firstSentence(s.briefing)
+      : firstSentence(s.job ?? '')) || fromSpeech;
     const end = s.endedAt ?? s.startedAt;
     return {
       id: s.id,
@@ -375,7 +387,8 @@ export class SessionStore {
       answers: s.answers.length,
       segments: s.segments.length,
       title,
-      participants: Object.keys(names).filter((id) => id !== 'me').map((id) => names[id]),
+      participants: Object.keys(names).filter((id) => id !== 'me' && s.participants[id]?.name?.trim()).map((id) => names[id]),
+      guests: s.event?.guests ?? [],
       hasSummary: Boolean(s.summary),
       refined: s.refined,
     };
@@ -518,7 +531,26 @@ function normalize(raw: any): StoredSession {
     refined: ['none', 'pending', 'done', 'error'].includes(raw.refined) ? raw.refined : 'none',
     refineError: typeof raw.refineError === 'string' ? raw.refineError : undefined,
     liveSegments: Array.isArray(raw.liveSegments) ? raw.liveSegments : undefined,
+    event: raw.event && typeof raw.event.title === 'string'
+      ? { ...raw.event, guests: Array.isArray(raw.event.guests) ? raw.event.guests.map(String) : [] }
+      : undefined,
+    job: typeof raw.job === 'string' && raw.job.trim() ? raw.job : undefined,
   };
+}
+
+function clip(text: string, max: number): string {
+  const t = text.trim().replace(/\s+/g, ' ');
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).replace(/[\s,;:–-]+$/, '')}…`;
+}
+
+/** First sentence of the first line, for titles made from free text. */
+function firstSentence(text: string): string {
+  const line = text.split('\n').map((l) => l.replace(/^#+\s*/, '').trim()).find(Boolean) ?? '';
+  const m = line.match(/^(.{12,}?[.!?])(\s|$)/);
+  return clip(m ? m[1].replace(/\.$/, '') : line, 80);
 }
 
 function clone<T>(v: T): T {

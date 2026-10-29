@@ -15,10 +15,13 @@ npm start
 - Chat sobre a reunião, ao vivo ou depois; biblioteca com busca por texto e por pessoa.
 - Use um idioma fixo (`pt-BR`, `en`): `multi` desliga a separação de vozes no Deepgram.
 
-Ajustes em `config.json > meeting` (nome, idioma padrão, gravação, refino, resumo automático, modelos).
+Modelos, atalhos e as opções de gravação, refino e resumo se ajustam no ⚙ da tela inicial, que grava em `config.json`. Nome e idioma padrão ficam em `config.json > meeting`.
 
 ## Modo Entrevista
 
-Briefing, transcrição dos dois lados e respostas/soluções de código sob demanda por atalho.
+Transcrição dos dois lados e respostas/soluções de código sob demanda por atalho. O copiloto recebe duas coisas:
+
+- **Seu perfil** (`profile.md`): currículo, experiências e histórias. Salvo uma vez, vale para todas as entrevistas.
+- **Esta entrevista**: empresa, vaga e foco. Escrito a cada entrevista; "Preparar com Claude" transforma essas notas num briefing.
 
 Tudo fica em arquivos locais (`sessions/*.json`, `*.md`, `*.wav`).
