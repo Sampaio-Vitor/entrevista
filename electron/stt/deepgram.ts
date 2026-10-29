@@ -8,6 +8,15 @@ import { normalizeLang, type LangCounts } from '../lang';
  * Two mono sockets cost the same as one multichannel socket and avoid
  * interleaving two capture clocks into one stereo stream.
  */
+
+/** A run of consecutive words from one speaker inside a result. */
+export interface SttPiece {
+  /** Deepgram speaker index, offset per connection; null without diarization. */
+  speaker: number | null;
+  text: string;
+  langCounts: LangCounts;
+}
+
 export interface SttResult {
   channel: Channel;
   text: string;
@@ -18,6 +27,11 @@ export interface SttResult {
   duration: number;
   /** Words per language, from `language=multi` word tags. Empty otherwise. */
   langCounts: LangCounts;
+  /**
+   * The result split by speaker, in order. One piece when diarization is off
+   * or the whole result is one voice. Always non-empty when `text` is.
+   */
+  pieces: SttPiece[];
 }
 
 export interface DeepgramOptions {
@@ -29,6 +43,8 @@ export interface DeepgramOptions {
   endpointingMs: number;
   utteranceEndMs: number;
   smartFormat: boolean;
+  /** Ask for per-word speaker labels. */
+  diarize?: boolean;
 }
 
 const KEEPALIVE_MS = 5000;
@@ -43,6 +59,11 @@ export class DeepgramStream extends EventEmitter {
   private lastAudioAt = 0;
   private keepaliveTimer: NodeJS.Timeout | null = null;
   private bytesSent = 0;
+  // Speaker indices restart at 0 on every socket. Offsetting them per
+  // connection means a new voice is never merged into an old label; the
+  // offline pass later unifies the labels anyway.
+  private speakerBase = 0;
+  private maxSpeakerSeen = -1;
 
   constructor(private readonly opts: DeepgramOptions) {
     super();
@@ -76,9 +97,14 @@ export class DeepgramStream extends EventEmitter {
       utterance_end_ms: String(o.utteranceEndMs),
       vad_events: 'true',
     });
+    if (o.diarize) params.set('diarize', 'true');
     const url = `wss://api.deepgram.com/v1/listen?${params.toString()}`;
     const ws = new WebSocket(url, { headers: { Authorization: `Token ${o.apiKey}` } });
     this.ws = ws;
+    if (this.maxSpeakerSeen >= 0) {
+      this.speakerBase += this.maxSpeakerSeen + 1;
+      this.maxSpeakerSeen = -1;
+    }
 
     ws.on('open', () => {
       this.backoff = 1000;
@@ -108,6 +134,7 @@ export class DeepgramStream extends EventEmitter {
             start: Number(msg.start ?? 0),
             duration: Number(msg.duration ?? 0),
             langCounts: countLanguages(alt?.words),
+            pieces: this.splitBySpeaker(alt?.words, text),
           };
           // Empty interims carry no information; empty finals still matter
           // (they can carry speech_final / from_finalize).
@@ -176,6 +203,34 @@ export class DeepgramStream extends EventEmitter {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'CloseStream' }));
       ws.close();
     } catch { /* ignore */ }
+  }
+
+  /** Group the words of one result into runs of the same speaker. */
+  private splitBySpeaker(words: unknown, text: string): SttPiece[] {
+    if (!text) return [];
+    if (!this.opts.diarize || !Array.isArray(words) || words.length === 0) {
+      return [{ speaker: null, text, langCounts: countLanguages(words) }];
+    }
+    const pieces: SttPiece[] = [];
+    let cur: { speaker: number | null; words: string[]; langCounts: LangCounts } | null = null;
+    for (const w of words as any[]) {
+      const raw = typeof w?.speaker === 'number' ? w.speaker : null;
+      if (raw !== null && raw > this.maxSpeakerSeen) this.maxSpeakerSeen = raw;
+      const speaker = raw === null ? null : raw + this.speakerBase;
+      const token: string = w?.punctuated_word ?? w?.word ?? '';
+      if (!token) continue;
+      if (!cur || cur.speaker !== speaker) {
+        if (cur) pieces.push({ speaker: cur.speaker, text: cur.words.join(' '), langCounts: cur.langCounts });
+        cur = { speaker, words: [], langCounts: {} };
+      }
+      cur.words.push(token);
+      const lang = normalizeLang(w?.language);
+      if (lang) cur.langCounts[lang] = (cur.langCounts[lang] ?? 0) + 1;
+    }
+    if (cur) pieces.push({ speaker: cur.speaker, text: cur.words.join(' '), langCounts: cur.langCounts });
+    // One voice: keep Deepgram's own formatting of the transcript string.
+    if (pieces.length === 1) pieces[0].text = text;
+    return pieces.length ? pieces : [{ speaker: null, text, langCounts: countLanguages(words) }];
   }
 
   private startKeepalive(): void {

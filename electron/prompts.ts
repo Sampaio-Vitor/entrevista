@@ -108,3 +108,58 @@ export function extractBriefing(text: string): string | null {
   const m = text.match(/<briefing>([\s\S]*?)<\/briefing>/i);
   return m ? m[1].trim() : null;
 }
+
+// ---------- meeting mode ----------
+
+const LANG_INSTRUCTION: Record<Lang, string> = {
+  pt: 'Write in Brazilian Portuguese.',
+  en: 'Write in English.',
+};
+
+export function meetingSummarySystemPrompt(): string {
+  return `You write the minutes of a meeting from its transcript. Speakers are labeled with their names (or "Participante N" when unnamed). You never invent facts, names, dates or numbers that are not in the transcript.
+
+Output, in Markdown, exactly these sections and nothing else (skip a section only if it would be empty, then write "Nenhum." / "None." under it):
+## Resumo
+3 to 6 sentences: what the meeting was about and what was concluded.
+## Decisões
+Bullets. One decision per bullet, with who proposed or confirmed it when the transcript shows it.
+## Ações
+Bullets as "- [ ] <action> — <responsible>" using the exact speaker labels. When no owner was stated, write "— a definir". Include a deadline if one was said.
+## Perguntas em aberto
+Bullets. Questions raised and not answered.
+## Próximos passos
+Bullets. What happens next, with dates if said.
+
+Rules: concise, factual, no preamble, no headers other than the five above, no quotes longer than one line. Keep technical terms as spoken. The transcript comes from automatic speech recognition: ignore filler and obvious transcription noise.`;
+}
+
+export function meetingSummaryUserMessage(args: { context: string; participants: string[]; transcript: string; lang: Lang }): string {
+  const parts: string[] = [];
+  if (args.context.trim()) parts.push(`CONTEXT GIVEN BY ME BEFORE THE MEETING:\n${args.context.trim()}`);
+  if (args.participants.length) parts.push(`PARTICIPANTS: ${args.participants.join(', ')}`);
+  parts.push(`TRANSCRIPT (oldest first):\n${args.transcript}`);
+  parts.push(`Write the minutes. ${LANG_INSTRUCTION[args.lang]}`);
+  return parts.join('\n\n');
+}
+
+export function meetingChatSystemPrompt(args: { context: string; participants: string[]; live: boolean }): string {
+  return `You are my assistant during ${args.live ? 'a meeting that is happening right now' : 'the review of a past meeting'}. You receive the transcript, labeled with the speakers' names (or "Participante N" when unnamed), and my questions. Answer from the transcript only; when the transcript does not say, say so in one line. Never invent facts, names, dates or numbers.
+
+Style: short. Prefer 1 to 5 "- " bullets or a two-line answer. Quote a speaker when it settles the question ("João: ..."). Answer in the language of my question. No preamble.
+
+${args.context.trim() ? `CONTEXT I GAVE BEFORE THE MEETING:\n${args.context.trim()}\n\n` : ''}${args.participants.length ? `PARTICIPANTS: ${args.participants.join(', ')}` : ''}`.trim();
+}
+
+export function meetingChatUserMessage(args: { transcript: string; isFirstTurn: boolean; hasNew: boolean; question: string }): string {
+  let context = '';
+  if (args.hasNew) {
+    const head = args.isFirstTurn
+      ? 'TRANSCRIPT SO FAR (oldest first):'
+      : 'NEW TRANSCRIPT since my last message (continues what you already have):';
+    context = `${head}\n${args.transcript}\n\n`;
+  } else if (args.isFirstTurn) {
+    context = 'No transcript yet.\n\n';
+  }
+  return `${context}MY QUESTION: ${args.question.trim()}`;
+}

@@ -30,7 +30,7 @@ export interface ClaudeSessionOptions {
 }
 
 export interface AskMeta {
-  kind: 'answer' | 'code' | 'setup';
+  kind: 'answer' | 'code' | 'setup' | 'chat' | 'summary';
   [key: string]: unknown;
 }
 
@@ -276,7 +276,9 @@ export class ClaudeSession extends EventEmitter {
         this.inflight = null;
         this.turns++;
         this.lastSpeed = j.usage?.speed ?? null;
-        const models = j.modelUsage ? Object.keys(j.modelUsage) : [];
+        // The CLI also bills a small helper model; report the one that wrote the answer.
+        const usage: Record<string, any> = j.modelUsage ?? {};
+        const models = Object.keys(usage).sort((a, b) => (usage[b]?.outputTokens ?? 0) - (usage[a]?.outputTokens ?? 0));
         this.lastModel = models[0] ?? null;
         if (j.is_error) {
           const message = typeof j.result === 'string' && j.result ? j.result : (j.error ?? j.subtype ?? 'unknown error');

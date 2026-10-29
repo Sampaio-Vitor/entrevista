@@ -7,41 +7,76 @@
   <title>Entrevista</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
+<body class="mode-meeting">
   <div id="toast" class="toast hidden" role="status"></div>
 
   <!-- ===== SETUP ===== -->
   <section id="view-setup" class="view">
     <header class="setup-head drag">
       <div class="brand">
-        <h1>Entrevista</h1>
-        <p>Copiloto ao vivo. Transcreve os dois lados e responde quando você pedir.</p>
+        <h1 id="brand-title">Reuniões</h1>
+        <p id="brand-sub">Grava os dois lados sem bot, separa quem falou e guarda tudo no seu Mac.</p>
       </div>
+      <nav class="mode-tabs no-drag" aria-label="Modo">
+        <button class="tab" data-mode="meeting" type="button">Reunião</button>
+        <button class="tab" data-mode="interview" type="button">Entrevista</button>
+        <button class="tab" data-mode="library" type="button">Biblioteca</button>
+      </nav>
     </header>
 
     <div class="setup-grid">
       <div class="setup-main">
-        <label for="briefing" class="field-label">Contexto inicial</label>
-        <p class="hint">Cole seu currículo, a vaga, a empresa e as histórias que quer usar. Português ou inglês. O Claude recebe isso como briefing durante a entrevista.</p>
-        <textarea id="briefing" spellcheck="false" placeholder="Ex.: Senior backend engineer, 7 anos, Go e Python. Vaga: Staff Engineer na Acme (série B, pagamentos). Histórias: migração que cortou latência de 900 ms para 310 ms; incidente de produção com rollback em 6 min; liderei squad de 5…"></textarea>
+        <!-- meeting -->
+        <div id="panel-meeting" class="panel">
+          <label for="context" class="field-label">Contexto da reunião <span class="muted">(opcional)</span></label>
+          <p class="hint">Uma linha basta: com quem, sobre o quê, o que você quer tirar dela. Vai para o resumo e para o chat.</p>
+          <textarea id="context" class="context" spellcheck="false" placeholder="Ex.: 1:1 com a Ana sobre o roadmap do Q1. Quero sair com as prioridades fechadas."></textarea>
+          <div class="row">
+            <button id="btn-start-meeting" class="btn primary" type="button">Começar reunião</button>
+            <label class="lang-pick" title="Idioma fixo transcreve melhor e separa as vozes. Auto detecta por palavra, mas junta as vozes.">
+              <span class="muted">Idioma</span>
+              <select id="meeting-lang">
+                <option value="pt-BR">Português</option>
+                <option value="en">English</option>
+                <option value="es">Español</option>
+                <option value="multi">Auto (pt/en)</option>
+              </select>
+            </label>
+            <span id="meeting-note" class="muted"></span>
+          </div>
+          <p class="hint">Ao vivo a separação de vozes é aproximada. Ao parar, o áudio gravado é transcrito de novo com separação precisa e o resumo é gerado.</p>
 
-        <div class="row">
-          <button id="btn-refine" class="btn secondary" type="button">Refinar com Claude</button>
-          <button id="btn-start" class="btn primary" type="button">Começar sessão</button>
-          <span id="start-note" class="muted"></span>
+          <div class="recent-head">
+            <h3>Reuniões recentes</h3>
+            <button id="btn-library" class="link" type="button">ver todas e buscar</button>
+          </div>
+          <ul id="recent-meetings" class="meetings"></ul>
         </div>
 
-        <div id="setup-chat" class="chat hidden">
-          <div class="chat-head">
-            <span>Diálogo de preparação <span class="muted" id="setup-model"></span></span>
-            <button id="chat-reset" class="link" type="button">reiniciar</button>
-          </div>
-          <div id="chat-log" class="chat-log"></div>
+        <!-- interview -->
+        <div id="panel-interview" class="panel hidden">
+          <label for="briefing" class="field-label">Contexto inicial</label>
+          <p class="hint">Cole seu currículo, a vaga, a empresa e as histórias que quer usar. Português ou inglês. O Claude recebe isso como briefing durante a entrevista.</p>
+          <textarea id="briefing" spellcheck="false" placeholder="Ex.: Senior backend engineer, 7 anos, Go e Python. Vaga: Staff Engineer na Acme (série B, pagamentos). Histórias: migração que cortou latência de 900 ms para 310 ms; incidente de produção com rollback em 6 min; liderei squad de 5…"></textarea>
+
           <div class="row">
-            <input id="chat-input" type="text" placeholder="Responda ao Claude e pressione Enter…" autocomplete="off" />
-            <button id="chat-send" class="btn secondary" type="button">Enviar</button>
+            <button id="btn-refine" class="btn secondary" type="button">Refinar com Claude</button>
+            <button id="btn-start" class="btn primary" type="button">Começar sessão</button>
+            <span id="start-note" class="muted"></span>
           </div>
-          <p class="hint">Quando o briefing final aparecer, ele é copiado para a caixa acima. Edite à vontade e comece.</p>
+
+          <div id="setup-chat" class="chat hidden">
+            <div class="chat-head">
+              <span>Diálogo de preparação <span class="muted" id="setup-model"></span></span>
+              <button id="chat-reset" class="link" type="button">reiniciar</button>
+            </div>
+            <div id="chat-log" class="chat-log"></div>
+            <div class="row">
+              <input id="chat-input" type="text" placeholder="Responda ao Claude e pressione Enter…" autocomplete="off" />
+              <button id="chat-send" class="btn secondary" type="button">Enviar</button>
+            </div>
+            <p class="hint">Quando o briefing final aparecer, ele é copiado para a caixa acima. Edite à vontade e comece.</p>
+          </div>
         </div>
       </div>
 
@@ -49,19 +84,59 @@
         <h3>Checklist</h3>
         <ul id="checklist" class="checklist"></ul>
 
-        <h3>Atalhos</h3>
-        <ul id="hotkeys" class="hotkeys"></ul>
+        <div class="interview-only">
+          <h3>Atalhos</h3>
+          <ul id="hotkeys" class="hotkeys"></ul>
 
-        <h3>Modelos</h3>
-        <ul id="models" class="models"></ul>
+          <h3>Modelos</h3>
+          <ul id="models" class="models"></ul>
 
-        <h3>Sessões anteriores</h3>
-        <ul id="sessions" class="sessions"></ul>
+          <h3>Entrevistas anteriores</h3>
+          <ul id="sessions" class="sessions"></ul>
+        </div>
+
+        <div class="meeting-only">
+          <h3>Pessoas</h3>
+          <ul id="side-people" class="people-side"></ul>
+
+          <h3>Como funciona</h3>
+          <ul class="how">
+            <li>Seu microfone é um canal; o áudio do sistema é outro. Quem está do outro lado é separado por voz.</li>
+            <li>Clique em um participante para dar nome. O nome vale para a transcrição, o resumo e a busca.</li>
+            <li>Ao parar, o áudio gravado passa por uma segunda transcrição mais precisa e o resumo é gerado.</li>
+          </ul>
+        </div>
       </aside>
     </div>
   </section>
 
-  <!-- ===== LIVE ===== -->
+  <!-- ===== LIBRARY ===== -->
+  <section id="view-library" class="view hidden">
+    <header class="bar drag">
+      <div class="bar-left">
+        <span class="view-title">Biblioteca</span>
+      </div>
+      <div class="bar-right no-drag">
+        <button id="lib-back" class="btn secondary small" type="button">Voltar</button>
+      </div>
+    </header>
+    <div class="lib-tools">
+      <input id="lib-q" type="search" placeholder="Buscar no que foi dito, no resumo ou no contexto…" autocomplete="off" />
+      <select id="lib-person" aria-label="Pessoa">
+        <option value="">Todas as pessoas</option>
+      </select>
+      <nav class="lib-tabs">
+        <button class="tab active" data-tab="meetings" type="button">Reuniões</button>
+        <button class="tab" data-tab="people" type="button">Pessoas</button>
+      </nav>
+    </div>
+    <main class="lib-body">
+      <div id="lib-meetings" class="lib-panel"></div>
+      <div id="lib-people" class="lib-panel hidden"></div>
+    </main>
+  </section>
+
+  <!-- ===== LIVE / VIEWER ===== -->
   <section id="view-live" class="view hidden">
     <header class="bar drag">
       <div class="bar-left">
@@ -80,13 +155,15 @@
           <span class="opacity-icon">◐</span>
           <input id="opacity" type="range" min="30" max="100" step="5" value="100" />
         </label>
-        <span id="model-badge" class="live-only badge"></span>
-        <button id="btn-lang" class="live-only btn ghost small lang-flag" type="button">🇺🇸</button>
-        <button id="btn-answer" class="live-only btn primary small" type="button">Resposta <kbd id="kbd-answer"></kbd></button>
-        <button id="btn-code" class="live-only btn secondary small" type="button">Código <kbd id="kbd-code"></kbd></button>
-        <button id="btn-clear" class="live-only btn ghost small" type="button" title="Limpar transcrição">Limpar</button>
+        <span id="model-badge" class="live-only badge interview-only"></span>
+        <button id="btn-lang" class="live-only btn ghost small lang-flag interview-only" type="button">🇺🇸</button>
+        <button id="btn-answer" class="live-only btn primary small interview-only" type="button">Resposta <kbd id="kbd-answer"></kbd></button>
+        <button id="btn-code" class="live-only btn secondary small interview-only" type="button">Código <kbd id="kbd-code"></kbd></button>
+        <button id="btn-clear" class="live-only btn ghost small interview-only" type="button" title="Limpar transcrição">Limpar</button>
         <button id="btn-hide" class="live-only btn ghost small" type="button" title="Ocultar janela">Ocultar <kbd id="kbd-hide"></kbd></button>
         <button id="btn-stop" class="live-only btn ghost small" type="button">Parar</button>
+        <button id="btn-summarize" class="view-only btn secondary small meeting-only" type="button">Resumir</button>
+        <button id="btn-refine-again" class="view-only btn ghost small meeting-only" type="button" title="Transcrever de novo a partir do áudio gravado">Refinar</button>
         <button id="btn-reveal" class="view-only btn ghost small" type="button" title="Mostrar o arquivo .md no Finder">Arquivo .md</button>
         <button id="btn-delete" class="view-only btn ghost small" type="button">Apagar</button>
         <button id="btn-back" class="view-only btn secondary small" type="button">Voltar</button>
@@ -97,15 +174,43 @@
 
     <main class="panes">
       <section class="pane transcript-pane">
-        <h2>Transcrição</h2>
+        <div class="pane-head">
+          <h2>Transcrição</h2>
+          <span id="transcript-note" class="muted small"></span>
+        </div>
+        <div id="participants" class="participants meeting-only"></div>
         <div id="transcript" class="transcript"></div>
       </section>
-      <section class="pane answer-pane">
+
+      <!-- interview: answers -->
+      <section class="pane answer-pane interview-only">
         <div id="answer-empty" class="answer-empty">
           <p>Pressione <kbd class="kbd-inline" id="kbd-answer-2"></kbd> para a resposta ou <kbd class="kbd-inline" id="kbd-code-2"></kbd> para resolver o que está na tela.</p>
         </div>
         <div id="answer-current"></div>
         <div id="answer-history"></div>
+      </section>
+
+      <!-- meeting: summary + chat -->
+      <section class="pane meeting-pane meeting-only">
+        <div id="summary-block" class="summary hidden">
+          <div class="pane-head">
+            <h2>Resumo</h2>
+            <span id="summary-meta" class="muted small"></span>
+          </div>
+          <div id="summary" class="summary-body"></div>
+        </div>
+        <div class="mchat">
+          <div class="pane-head">
+            <h2>Perguntas</h2>
+            <span id="mchat-note" class="muted small"></span>
+          </div>
+          <div id="mchat-log" class="mchat-log"></div>
+          <div class="mchat-input row">
+            <input id="mchat-input" type="text" placeholder="Pergunte sobre a reunião… (ex.: o que ficou decidido sobre o deploy?)" autocomplete="off" />
+            <button id="mchat-send" class="btn secondary" type="button">Perguntar</button>
+          </div>
+        </div>
       </section>
     </main>
   </section>

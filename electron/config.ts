@@ -32,6 +32,29 @@ export interface AppConfig {
     opacity: number;
   };
   screenshot: { maxWidth: number };
+  /** Meeting mode: recorder without the copilot. */
+  meeting: {
+    /** Label for the microphone channel in transcripts and prompts. */
+    myName: string;
+    /**
+     * Default STT language for meetings, overridable per meeting in the UI.
+     * A fixed language (`pt-BR`, `en`) transcribes better and lets Deepgram
+     * tell voices apart; `multi` (interview default) breaks diarization.
+     */
+    language: string;
+    /** Deepgram speaker labels on the system channel (who said what among the others). */
+    diarize: boolean;
+    /** Keep one 16 kHz mono WAV per channel next to the session for the offline pass. */
+    saveAudio: boolean;
+    /** After Parar: re-transcribe the WAVs with Deepgram pre-recorded + diarization. */
+    refine: boolean;
+    /** After refining: summary with decisions and actions per person. */
+    autoSummary: boolean;
+    /** Meeting windows stay normal (not floating) unless this is on. */
+    alwaysOnTop: boolean;
+    summary: ModelConfig;
+    chat: ModelConfig;
+  };
   audio: {
     /**
      * With a Bluetooth headset as output, make the built-in mic the system
@@ -67,6 +90,17 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   window: { alwaysOnTop: true, hideFromScreenCapture: true, width: 1120, height: 720, opacity: 1 },
   screenshot: { maxWidth: 1568 },
+  meeting: {
+    myName: 'Eu',
+    language: 'pt-BR',
+    diarize: true,
+    saveAudio: true,
+    refine: true,
+    autoSummary: true,
+    alwaysOnTop: false,
+    summary: { model: 'sonnet', fastMode: false, effort: 'medium' },
+    chat: { model: 'sonnet', fastMode: false, effort: 'low' },
+  },
   audio: { forceBuiltInMicWhenBluetooth: true },
   autoStart: false,
 };
